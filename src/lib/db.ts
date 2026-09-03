@@ -92,7 +92,6 @@ CREATE TABLE IF NOT EXISTS routes (
 CREATE INDEX IF NOT EXISTS idx_units_region ON units(region_id);
 CREATE INDEX IF NOT EXISTS idx_units_team ON units(team_id);
 CREATE INDEX IF NOT EXISTS idx_regions_team ON regions(team_id);
-CREATE INDEX IF NOT EXISTS idx_regions_parent ON regions(parent_id);
 `);
 
 // Lightweight migration: older databases created before "parent_id" existed
