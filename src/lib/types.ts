@@ -20,6 +20,7 @@ export type Region = {
   notes: string | null;
   centroid_lat: number | null;
   centroid_lng: number | null;
+  parent_id: string | null; // null = Bairro (nível 1); preenchido = Sub-bairro (nível 2, filho de um Bairro)
   created_at: string;
   updated_at: string;
 };

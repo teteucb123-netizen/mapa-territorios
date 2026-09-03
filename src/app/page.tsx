@@ -1,23 +1,25 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import MapView from "@/components/MapViewClient";
-import type { DrawTarget, MapMode } from "@/components/MapView";
+import type { ConnectorLine, DrawTarget, FlyTarget, MapMode, SearchMarker } from "@/components/MapView";
 import RegionsPanel from "@/components/RegionsPanel";
 import UnitsPanel from "@/components/UnitsPanel";
+import BairrosPanel from "@/components/BairrosPanel";
 import TeamsPanel from "@/components/TeamsPanel";
 import DistanceMatrixPanel from "@/components/DistanceMatrixPanel";
 import RoutePlannerPanel from "@/components/RoutePlannerPanel";
 import DashboardPanel from "@/components/DashboardPanel";
-import { Button, Select } from "@/components/ui";
+import { Button, Input, Select } from "@/components/ui";
 import { api } from "@/lib/api-client";
 import { Area, Region, Team, Unit } from "@/lib/types";
 
-type Tab = "mapa" | "regioes" | "unidades" | "equipes" | "distancias" | "rotas" | "dashboard";
+type Tab = "mapa" | "bairros" | "regioes" | "unidades" | "equipes" | "distancias" | "rotas" | "dashboard";
 type Sequence = { id: string; name: string; lat: number; lng: number }[];
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "mapa", label: "Mapa" },
+  { id: "bairros", label: "Bairros" },
   { id: "regioes", label: "Regiões" },
   { id: "unidades", label: "Unidades" },
   { id: "equipes", label: "Equipes" },
@@ -50,6 +52,20 @@ export default function Home() {
   } | null>(null);
 
   const [routeSequence, setRouteSequence] = useState<Sequence | null>(null);
+
+  // Navigation / highlight state shared between the map and every list
+  // (Bairros, Regiões, Distâncias) so clicking in one place is reflected
+  // in the other, per the "lista ↔ mapa" behavior.
+  const [flyTo, setFlyTo] = useState<FlyTarget | null>(null);
+  const flyTokenRef = useRef(0);
+  const [resetViewToken, setResetViewToken] = useState(0);
+  const [highlightRegionIds, setHighlightRegionIds] = useState<string[]>([]);
+  const [highlightUnitId, setHighlightUnitId] = useState<string | null>(null);
+  const [connectorLine, setConnectorLine] = useState<ConnectorLine | null>(null);
+  const [searchMarker, setSearchMarker] = useState<SearchMarker | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [searching, setSearching] = useState(false);
 
   const fetchAll = useCallback(async () => {
     const [a, r, u, t] = await Promise.all([api.areas.list(), api.regions.list(), api.units.list(), api.teams.list()]);
@@ -100,8 +116,54 @@ export default function Home() {
     await fetchAll();
   }
 
+  function flyToPoint(lat: number, lng: number, zoom = 16) {
+    flyTokenRef.current += 1;
+    setFlyTo({ token: flyTokenRef.current, lat, lng, zoom });
+  }
+
+  function flyToBoundsCoords(coords: [number, number][], zoom?: number) {
+    flyTokenRef.current += 1;
+    setFlyTo({ token: flyTokenRef.current, bounds: coords, zoom });
+  }
+
+  // LISTA → MAPA: localizar e destacar um bairro/sub-bairro (chamado pela
+  // aba Bairros, ou pela aba Regiões).
+  function focusRegion(region: Region) {
+    setHighlightRegionIds([region.id]);
+    setHighlightUnitId(null);
+    setConnectorLine(null);
+    setSearchMarker(null);
+    setMapMode("regions");
+    if (region.geojson && region.geojson.length > 0) {
+      flyToBoundsCoords(region.geojson, region.parent_id ? 16 : 14);
+    } else if (region.centroid_lat != null && region.centroid_lng != null) {
+      flyToPoint(region.centroid_lat, region.centroid_lng, region.parent_id ? 16 : 14);
+    }
+    setTab("mapa");
+  }
+
+  // LISTA → MAPA: localizar e destacar uma rua/unidade.
+  function focusUnit(unit: Unit) {
+    setHighlightUnitId(unit.id);
+    setHighlightRegionIds([]);
+    setConnectorLine(null);
+    setSearchMarker(null);
+    flyToPoint(unit.lat, unit.lng, 17);
+    setTab("mapa");
+  }
+
+  // MAPA → LISTA: clicar num polígono de bairro/sub-bairro destaca o item
+  // correspondente nas listas, sem forçar navegação (o usuário já está
+  // olhando o mapa).
+  function handleRegionMapClick(region: Region) {
+    setHighlightRegionIds([region.id]);
+    setHighlightUnitId(null);
+  }
+
   async function handleUnitClick(unit: Unit) {
     setFocusUnitId(unit.id);
+    setHighlightUnitId(unit.id);
+    setHighlightRegionIds([]);
     if (mapMode !== "distances") return;
 
     setDistanceSelection((prev) => {
@@ -112,6 +174,101 @@ export default function Home() {
       else next = [...prev, unit];
       return next;
     });
+  }
+
+  // Aba Distâncias: clicar em "Bairro A → Bairro B — X km" mostra os dois
+  // bairros conectados por uma linha no mapa.
+  function handleDistanceCellClick(originId: string, destId: string, km: number) {
+    const a = regions.find((r) => r.id === originId);
+    const b = regions.find((r) => r.id === destId);
+    if (!a || !b || a.centroid_lat == null || a.centroid_lng == null || b.centroid_lat == null || b.centroid_lng == null) return;
+    setConnectorLine({
+      a: { lat: a.centroid_lat, lng: a.centroid_lng, name: a.name },
+      b: { lat: b.centroid_lat, lng: b.centroid_lng, name: b.name },
+      label: `${km} km`,
+    });
+    setHighlightRegionIds([a.id, b.id]);
+    setHighlightUnitId(null);
+    setSearchMarker(null);
+    setMapMode("regions");
+    flyToBoundsCoords(
+      [
+        [a.centroid_lng, a.centroid_lat],
+        [b.centroid_lng, b.centroid_lat],
+      ],
+      13
+    );
+    setTab("mapa");
+  }
+
+  function resetToFullArea() {
+    setResetViewToken((n) => n + 1);
+    setHighlightRegionIds([]);
+    setHighlightUnitId(null);
+    setConnectorLine(null);
+    setSearchMarker(null);
+  }
+
+  async function runSearch() {
+    const q = searchQuery.trim();
+    if (!q) return;
+    setSearching(true);
+    setSearchError(null);
+
+    const qLower = q.toLowerCase();
+    const score = (name: string) => {
+      const n = name.toLowerCase();
+      if (!n) return 0;
+      if (n === qLower) return 3;
+      if (n.startsWith(qLower)) return 2;
+      if (n.includes(qLower)) return 1;
+      return 0;
+    };
+
+    let bestRegion: Region | undefined;
+    let bestRegionScore = 0;
+    for (const r of regions) {
+      const s = score(r.name);
+      if (s > bestRegionScore) {
+        bestRegionScore = s;
+        bestRegion = r;
+      }
+    }
+
+    let bestUnit: Unit | undefined;
+    let bestUnitScore = 0;
+    for (const u of units) {
+      const s = Math.max(score(u.name), score(u.address || ""), score(u.neighborhood || ""), score(u.city || ""));
+      if (s > bestUnitScore) {
+        bestUnitScore = s;
+        bestUnit = u;
+      }
+    }
+
+    if (bestRegion && bestRegionScore > 0 && bestRegionScore >= bestUnitScore) {
+      focusRegion(bestRegion);
+      setSearching(false);
+      return;
+    }
+    if (bestUnit && bestUnitScore > 0) {
+      focusUnit(bestUnit);
+      setSearching(false);
+      return;
+    }
+
+    try {
+      const result = await api.geocode(q);
+      setSearchMarker({ lat: result.lat, lng: result.lng, label: result.displayName });
+      setHighlightRegionIds([]);
+      setHighlightUnitId(null);
+      setConnectorLine(null);
+      flyToPoint(result.lat, result.lng, 16);
+      setTab("mapa");
+    } catch (e) {
+      setSearchError(e instanceof Error ? e.message : "Nada encontrado. Tente outro termo ou um endereço completo.");
+    } finally {
+      setSearching(false);
+    }
   }
 
   useEffect(() => {
@@ -140,9 +297,9 @@ export default function Home() {
       <header className="flex shrink-0 items-center justify-between border-b border-slate-200 bg-slate-900 px-5 py-3">
         <div>
           <h1 className="text-sm font-semibold text-white">Mapa de Territórios</h1>
-          <p className="text-xs text-slate-400">Regiões, unidades, distâncias e rotas</p>
+          <p className="text-xs text-slate-400">Bairros, sub-bairros, ruas, distâncias e rotas</p>
         </div>
-        <nav className="flex gap-1">
+        <nav className="flex flex-wrap gap-1">
           {TABS.map((t) => (
             <button
               key={t.id}
@@ -176,17 +333,46 @@ export default function Home() {
                   onMapClickForUnit={handleMapClickForUnit}
                   onUnitDragEnd={handleUnitDragEnd}
                   onUnitClick={handleUnitClick}
+                  onRegionClick={handleRegionMapClick}
                   distanceSelection={distanceSelection}
                   routeSequence={mapMode === "routes" ? routeSequence : null}
+                  highlightRegionIds={highlightRegionIds}
+                  highlightUnitId={highlightUnitId}
+                  connectorLine={connectorLine}
+                  flyTo={flyTo}
+                  resetViewToken={resetViewToken}
+                  searchMarker={searchMarker}
                 />
 
                 <div className="pointer-events-none absolute inset-0">
                   <div className="pointer-events-auto absolute left-3 top-3 w-72 space-y-3 rounded-lg border border-slate-200 bg-white/95 p-3 shadow-lg backdrop-blur">
                     <div>
+                      <span className="mb-1 block text-xs font-medium text-slate-500">🔎 Pesquisar bairro, rua ou endereço</span>
+                      <div className="flex gap-1.5">
+                        <Input
+                          value={searchQuery}
+                          onChange={(e) => setSearchQuery(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") runSearch();
+                          }}
+                          placeholder="Ex.: Guaratiba, Av. Dom João VI…"
+                        />
+                        <Button variant="secondary" onClick={runSearch} disabled={searching}>
+                          {searching ? "…" : "Ir"}
+                        </Button>
+                      </div>
+                      {searchError && <p className="mt-1 text-xs text-red-600">{searchError}</p>}
+                    </div>
+
+                    <Button variant="secondary" className="w-full" onClick={resetToFullArea}>
+                      ⌂ Voltar para a área completa
+                    </Button>
+
+                    <div>
                       <span className="mb-1 block text-xs font-medium text-slate-500">Modo de visualização</span>
                       <Select value={mapMode} onChange={(e) => setMapMode(e.target.value as MapMode)}>
                         <option value="normal">Normal</option>
-                        <option value="regions">Regiões</option>
+                        <option value="regions">Regiões / bairros</option>
                         <option value="distances">Distâncias</option>
                         <option value="routes">Rotas</option>
                         <option value="concentration">Concentração</option>
@@ -246,6 +432,19 @@ export default function Home() {
                       </div>
                     )}
 
+                    {connectorLine && (
+                      <div className="border-t border-slate-100 pt-3">
+                        <span className="mb-1 block text-xs font-medium text-slate-500">Bairros conectados</span>
+                        <p className="text-xs text-slate-600">
+                          {connectorLine.a.name} ↔ {connectorLine.b.name}
+                          {connectorLine.label && <> — {connectorLine.label}</>}
+                        </p>
+                        <Button variant="ghost" className="mt-1 w-full" onClick={() => setConnectorLine(null)}>
+                          Limpar
+                        </Button>
+                      </div>
+                    )}
+
                     {mapMode === "routes" && routeSequence && (
                       <div className="border-t border-slate-100 pt-3">
                         <span className="mb-1 block text-xs font-medium text-slate-500">Rota exibida</span>
@@ -258,6 +457,17 @@ export default function Home() {
                   </div>
                 </div>
               </div>
+            )}
+
+            {tab === "bairros" && (
+              <BairrosPanel
+                regions={regions}
+                units={units}
+                onSelectRegion={focusRegion}
+                onSelectUnit={focusUnit}
+                selectedRegionId={highlightRegionIds.length === 1 ? highlightRegionIds[0] : null}
+                selectedUnitId={highlightUnitId}
+              />
             )}
 
             {tab === "regioes" && (
@@ -278,7 +488,7 @@ export default function Home() {
 
             {tab === "equipes" && <TeamsPanel teams={teams} onChange={fetchAll} />}
 
-            {tab === "distancias" && <DistanceMatrixPanel regions={regions} />}
+            {tab === "distancias" && <DistanceMatrixPanel regions={regions} onCellClick={handleDistanceCellClick} />}
 
             {tab === "rotas" && (
               <RoutePlannerPanel

@@ -6,8 +6,13 @@ export async function GET(req: NextRequest) {
   const type = req.nextUrl.searchParams.get("type") || "units"; // "units" | "regions"
 
   if (type === "regions") {
+    // "Distâncias entre Bairros": só o nível 1 (bairros, sem parent_id) entra
+    // na matriz — sub-bairros e ruas ficam de fora dessa comparação.
     const regions = db
-      .prepare(`SELECT id, name, color, centroid_lat, centroid_lng FROM regions WHERE centroid_lat IS NOT NULL`)
+      .prepare(
+        `SELECT id, name, color, centroid_lat, centroid_lng FROM regions
+         WHERE centroid_lat IS NOT NULL AND parent_id IS NULL`
+      )
       .all() as { id: string; name: string; color: string; centroid_lat: number; centroid_lng: number }[];
 
     if (regions.length === 0) {

@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS regions (
   notes TEXT,
   centroid_lat REAL,
   centroid_lng REAL,
+  parent_id TEXT REFERENCES regions(id) ON DELETE SET NULL,  -- NULL = Bairro (top level); set = Sub-bairro (child of a Bairro)
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -91,7 +92,17 @@ CREATE TABLE IF NOT EXISTS routes (
 CREATE INDEX IF NOT EXISTS idx_units_region ON units(region_id);
 CREATE INDEX IF NOT EXISTS idx_units_team ON units(team_id);
 CREATE INDEX IF NOT EXISTS idx_regions_team ON regions(team_id);
+CREATE INDEX IF NOT EXISTS idx_regions_parent ON regions(parent_id);
 `);
+
+// Lightweight migration: older databases created before "parent_id" existed
+// (Bairro/Sub-bairro hierarchy) won't have the column yet. Add it in place
+// instead of losing data.
+const regionColumns = db.prepare(`PRAGMA table_info(regions)`).all() as { name: string }[];
+if (!regionColumns.some((c) => c.name === "parent_id")) {
+  db.exec(`ALTER TABLE regions ADD COLUMN parent_id TEXT REFERENCES regions(id) ON DELETE SET NULL`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_regions_parent ON regions(parent_id)`);
+}
 
 export function touch(table: string, id: string) {
   db.prepare(`UPDATE ${table} SET updated_at = datetime('now') WHERE id = ?`).run(id);

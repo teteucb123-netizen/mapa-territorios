@@ -10,6 +10,22 @@ export type DrawTarget = "area" | { regionId: string } | null;
 
 type RouteSequencePoint = { id: string; name: string; lat: number; lng: number };
 
+export type FlyTarget = {
+  token: number; // bump to re-trigger even if lat/lng/bounds are unchanged
+  lat?: number;
+  lng?: number;
+  zoom?: number;
+  bounds?: [number, number][]; // ring of [lng, lat] — if present, takes priority over lat/lng
+};
+
+export type ConnectorLine = {
+  a: { lat: number; lng: number; name: string };
+  b: { lat: number; lng: number; name: string };
+  label?: string;
+};
+
+export type SearchMarker = { lat: number; lng: number; label: string };
+
 type Props = {
   areas: Area[];
   regions: Region[];
@@ -22,8 +38,15 @@ type Props = {
   onMapClickForUnit: (lat: number, lng: number) => void;
   onUnitDragEnd: (unitId: string, lat: number, lng: number) => void;
   onUnitClick: (unit: Unit) => void;
+  onRegionClick: (region: Region) => void;
   distanceSelection: Unit[];
   routeSequence: RouteSequencePoint[] | null;
+  highlightRegionIds: string[];
+  highlightUnitId: string | null;
+  connectorLine: ConnectorLine | null;
+  flyTo: FlyTarget | null;
+  resetViewToken: number; // bump to fit the view back to the full drawn area
+  searchMarker: SearchMarker | null;
 };
 
 function regionColor(regions: Region[], regionId: string | null): string {
@@ -57,8 +80,15 @@ export default function MapView({
   onMapClickForUnit,
   onUnitDragEnd,
   onUnitClick,
+  onRegionClick,
   distanceSelection,
   routeSequence,
+  highlightRegionIds,
+  highlightUnitId,
+  connectorLine,
+  flyTo,
+  resetViewToken,
+  searchMarker,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -66,16 +96,22 @@ export default function MapView({
   const regionsLayerRef = useRef<L.LayerGroup | null>(null);
   const unitsLayerRef = useRef<L.LayerGroup | null>(null);
   const routeLayerRef = useRef<L.LayerGroup | null>(null);
+  const connectorLayerRef = useRef<L.LayerGroup | null>(null);
+  const searchLayerRef = useRef<L.LayerGroup | null>(null);
   const drawHandlerRef = useRef<L.Draw.Polygon | null>(null);
 
   const onPolygonDrawnRef = useRef(onPolygonDrawn);
   const onMapClickForUnitRef = useRef(onMapClickForUnit);
   const placingUnitRef = useRef(placingUnit);
+  const areasRef = useRef(areas);
+  const regionsRef = useRef(regions);
 
   useEffect(() => {
     onPolygonDrawnRef.current = onPolygonDrawn;
     onMapClickForUnitRef.current = onMapClickForUnit;
     placingUnitRef.current = placingUnit;
+    areasRef.current = areas;
+    regionsRef.current = regions;
   });
 
   // Init map once.
@@ -96,6 +132,8 @@ export default function MapView({
     regionsLayerRef.current = L.layerGroup().addTo(map);
     unitsLayerRef.current = L.layerGroup().addTo(map);
     routeLayerRef.current = L.layerGroup().addTo(map);
+    connectorLayerRef.current = L.layerGroup().addTo(map);
+    searchLayerRef.current = L.layerGroup().addTo(map);
 
     map.on(L.Draw.Event.CREATED, (e: L.LeafletEvent) => {
       const layer = (e as unknown as { layer: L.Polygon }).layer;
@@ -140,6 +178,48 @@ export default function MapView({
     }
   }, [placingUnit]);
 
+  // Fly to a requested target — a searched/selected bairro, sub-bairro, rua
+  // or an arbitrary geocoded address. `token` forces the effect to re-run
+  // even when clicking the same item twice in a row.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !flyTo) return;
+    if (flyTo.bounds && flyTo.bounds.length >= 1) {
+      const latlngs = flyTo.bounds.map(([lng, lat]) => [lat, lng] as [number, number]);
+      if (latlngs.length === 1) {
+        map.flyTo(latlngs[0], flyTo.zoom ?? 16, { duration: 1 });
+      } else {
+        map.flyToBounds(L.latLngBounds(latlngs), { padding: [60, 60], maxZoom: flyTo.zoom ?? 16, duration: 1 });
+      }
+    } else if (typeof flyTo.lat === "number" && typeof flyTo.lng === "number") {
+      map.flyTo([flyTo.lat, flyTo.lng], flyTo.zoom ?? 16, { duration: 1 });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flyTo?.token]);
+
+  // "Voltar para a área completa": fit the view back to the drawn operating
+  // area, or fall back to all regions / all units if no area is drawn yet.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || resetViewToken === 0) return;
+    const currentAreas = areasRef.current;
+    const currentRegions = regionsRef.current;
+
+    if (currentAreas.length > 0 && currentAreas[0].geojson.length > 0) {
+      const latlngs = currentAreas[0].geojson.map(([lng, lat]) => [lat, lng] as [number, number]);
+      map.flyToBounds(L.latLngBounds(latlngs), { padding: [40, 40], duration: 1 });
+      return;
+    }
+    const regionPoints = currentRegions
+      .filter((r) => r.centroid_lat != null && r.centroid_lng != null)
+      .map((r) => [r.centroid_lat as number, r.centroid_lng as number] as [number, number]);
+    if (regionPoints.length > 0) {
+      map.flyToBounds(L.latLngBounds(regionPoints), { padding: [60, 60], duration: 1 });
+      return;
+    }
+    map.flyTo([-22.93, -43.58], 12, { duration: 1 });
+  }, [resetViewToken]);
+
   // Redraw area.
   useEffect(() => {
     const layer = areaLayerRef.current;
@@ -151,25 +231,30 @@ export default function MapView({
     });
   }, [areas]);
 
-  // Redraw regions.
+  // Redraw regions (bairros e sub-bairros).
   useEffect(() => {
     const layer = regionsLayerRef.current;
     if (!layer) return;
     layer.clearLayers();
-    if (mode !== "regions" && mode !== "normal" && mode !== "concentration") return;
+    if (mode !== "regions" && mode !== "normal" && mode !== "concentration" && mode !== "distances") return;
     regions.forEach((region) => {
       if (!region.geojson || region.geojson.length < 3) return;
+      const isHighlighted = highlightRegionIds.includes(region.id);
+      const isSubBairro = !!region.parent_id;
       const latlngs = region.geojson.map(([lng, lat]) => [lat, lng] as [number, number]);
-      L.polygon(latlngs, {
+      const polygon = L.polygon(latlngs, {
         color: region.color,
-        weight: 2,
+        weight: isHighlighted ? 4 : isSubBairro ? 1.5 : 2,
+        dashArray: isSubBairro ? "4 4" : undefined,
         fillColor: region.color,
-        fillOpacity: mode === "regions" ? 0.25 : 0.1,
+        fillOpacity: isHighlighted ? 0.5 : mode === "regions" ? 0.25 : 0.1,
       })
-        .bindTooltip(region.name, { permanent: false, direction: "center" })
+        .bindTooltip(`${region.name}${isSubBairro ? " (sub-bairro)" : ""}`, { permanent: false, direction: "center" })
+        .on("click", () => onRegionClick(region))
         .addTo(layer);
+      if (isHighlighted) polygon.bringToFront();
     });
-  }, [regions, mode]);
+  }, [regions, mode, highlightRegionIds, onRegionClick]);
 
   const handleUnitDragEnd = useCallback(
     (unitId: string, marker: L.Marker) => {
@@ -179,13 +264,13 @@ export default function MapView({
     [onUnitDragEnd]
   );
 
-  // Redraw units.
+  // Redraw units (ruas / pontos).
   useEffect(() => {
     const layer = unitsLayerRef.current;
     if (!layer) return;
     layer.clearLayers();
     units.forEach((unit) => {
-      const isSelected = distanceSelection.some((u) => u.id === unit.id);
+      const isSelected = distanceSelection.some((u) => u.id === unit.id) || unit.id === highlightUnitId;
       const color = regionColor(regions, unit.region_id);
       const marker = L.marker([unit.lat, unit.lng], {
         icon: unitIcon(color, isSelected),
@@ -199,8 +284,9 @@ export default function MapView({
       marker.on("click", () => onUnitClick(unit));
       marker.on("dragend", () => handleUnitDragEnd(unit.id, marker));
       marker.addTo(layer);
+      if (isSelected) marker.setZIndexOffset(1000);
     });
-  }, [units, regions, distanceSelection, onUnitClick, handleUnitDragEnd]);
+  }, [units, regions, distanceSelection, highlightUnitId, onUnitClick, handleUnitDragEnd]);
 
   // Draw the currently selected route as connected segments.
   useEffect(() => {
@@ -223,6 +309,67 @@ export default function MapView({
         .addTo(layer);
     });
   }, [routeSequence]);
+
+  // Draw the "Bairro A ↔ Bairro B" connector line (from clicking a
+  // distance-matrix cell).
+  useEffect(() => {
+    const layer = connectorLayerRef.current;
+    if (!layer) return;
+    layer.clearLayers();
+    if (!connectorLine) return;
+    const { a, b, label } = connectorLine;
+    L.polyline(
+      [
+        [a.lat, a.lng],
+        [b.lat, b.lng],
+      ],
+      { color: "#9333ea", weight: 3, dashArray: "6 6" }
+    ).addTo(layer);
+    [a, b].forEach((p) => {
+      L.marker([p.lat, p.lng], {
+        icon: L.divIcon({
+          className: "",
+          html: `<div style="background:#9333ea;border:3px solid white;border-radius:50%;width:18px;height:18px;box-shadow:0 1px 4px rgba(0,0,0,.5)"></div>`,
+          iconSize: [18, 18],
+          iconAnchor: [9, 9],
+        }),
+      })
+        .bindTooltip(p.name, { permanent: true, direction: "top" })
+        .addTo(layer);
+    });
+    if (label) {
+      const midLat = (a.lat + b.lat) / 2;
+      const midLng = (a.lng + b.lng) / 2;
+      L.marker([midLat, midLng], {
+        icon: L.divIcon({
+          className: "",
+          html: `<div style="background:#9333ea;color:white;font-size:11px;font-weight:600;padding:2px 6px;border-radius:9999px;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.5)">${escapeHtml(
+            label
+          )}</div>`,
+          iconSize: [0, 0],
+        }),
+      }).addTo(layer);
+    }
+  }, [connectorLine]);
+
+  // Ad-hoc search-result marker (address not matched to an existing bairro/unidade).
+  useEffect(() => {
+    const layer = searchLayerRef.current;
+    if (!layer) return;
+    layer.clearLayers();
+    if (!searchMarker) return;
+    L.marker([searchMarker.lat, searchMarker.lng], {
+      icon: L.divIcon({
+        className: "",
+        html: `<div style="background:#0f172a;border:3px solid #facc15;border-radius:50% 50% 50% 0;width:22px;height:22px;transform:rotate(-45deg);box-shadow:0 1px 4px rgba(0,0,0,.5)"></div>`,
+        iconSize: [22, 22],
+        iconAnchor: [11, 22],
+      }),
+    })
+      .bindPopup(escapeHtml(searchMarker.label))
+      .addTo(layer)
+      .openPopup();
+  }, [searchMarker]);
 
   return <div ref={containerRef} className="h-full w-full" />;
 }

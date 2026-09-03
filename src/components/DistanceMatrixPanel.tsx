@@ -14,7 +14,13 @@ type MatrixData = {
   estimated: boolean;
 };
 
-export default function DistanceMatrixPanel({ regions }: { regions: Region[] }) {
+export default function DistanceMatrixPanel({
+  regions,
+  onCellClick,
+}: {
+  regions: Region[];
+  onCellClick?: (originId: string, destId: string, km: number, minutes: number) => void;
+}) {
   const [type, setType] = useState<"units" | "regions">("regions");
   const [regionFilter, setRegionFilter] = useState("");
   const [data, setData] = useState<MatrixData | null>(null);
@@ -101,10 +107,16 @@ export default function DistanceMatrixPanel({ regions }: { regions: Region[] }) 
                       {i === j ? (
                         <span className="text-slate-300">—</span>
                       ) : (
-                        <>
+                        <button
+                          type="button"
+                          disabled={type !== "regions" || !onCellClick}
+                          onClick={() => onCellClick?.(data.ids[i], data.ids[j], data.km[i][j], data.minutes[i][j])}
+                          className={type === "regions" ? "rounded px-1 py-0.5 hover:bg-teal-50 hover:text-teal-700" : ""}
+                          title={type === "regions" ? "Ver no mapa" : undefined}
+                        >
                           {data.km[i][j]} km
                           <span className="ml-1 text-xs text-slate-400">· {data.minutes[i][j]} min</span>
-                        </>
+                        </button>
                       )}
                     </td>
                   ))}

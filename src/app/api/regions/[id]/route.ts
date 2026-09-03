@@ -40,6 +40,33 @@ export async function PUT(req: NextRequest, { params }: Params) {
     values[col] = val;
   };
 
+  if (body.parent_id !== undefined) {
+    const parentId: string | null = body.parent_id;
+    if (parentId) {
+      if (parentId === id) {
+        return NextResponse.json({ error: "Uma região não pode ser pai de si mesma." }, { status: 400 });
+      }
+      const parent = db.prepare(`SELECT id, parent_id FROM regions WHERE id = ?`).get(parentId) as
+        | { id: string; parent_id: string | null }
+        | undefined;
+      if (!parent) return NextResponse.json({ error: "Região pai (bairro) não encontrada." }, { status: 400 });
+      if (parent.parent_id) {
+        return NextResponse.json(
+          { error: "Só é permitido um nível de sub-bairro: escolha um bairro (sem pai) como região pai." },
+          { status: 400 }
+        );
+      }
+      const hasChildren = db.prepare(`SELECT 1 FROM regions WHERE parent_id = ? LIMIT 1`).get(id);
+      if (hasChildren) {
+        return NextResponse.json(
+          { error: "Esta região já tem sub-bairros — um bairro com sub-bairros não pode virar sub-bairro de outro." },
+          { status: 400 }
+        );
+      }
+    }
+    assign("parent_id", parentId);
+  }
+
   if (body.name !== undefined) assign("name", body.name);
   if (body.code !== undefined) assign("code", body.code);
   if (body.color !== undefined) assign("color", body.color);

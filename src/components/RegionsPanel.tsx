@@ -7,7 +7,7 @@ import { Button, Card, Field, Input, Select, Textarea, Badge } from "./ui";
 
 const COLOR_PRESETS = ["#2563eb", "#dc2626", "#16a34a", "#d97706", "#7c3aed", "#0891b2", "#db2777", "#4b5563"];
 
-const emptyForm = { name: "", code: "", color: COLOR_PRESETS[0], responsible: "", team_id: "", notes: "" };
+const emptyForm = { name: "", code: "", color: COLOR_PRESETS[0], responsible: "", team_id: "", notes: "", parent_id: "" };
 
 export default function RegionsPanel({
   regions,
@@ -36,6 +36,7 @@ export default function RegionsPanel({
       responsible: region.responsible || "",
       team_id: region.team_id || "",
       notes: region.notes || "",
+      parent_id: region.parent_id || "",
     });
   }
 
@@ -59,6 +60,7 @@ export default function RegionsPanel({
       responsible: form.responsible.trim() || null,
       team_id: form.team_id || null,
       notes: form.notes.trim() || null,
+      parent_id: form.parent_id || null,
     };
     try {
       if (editingId) await api.regions.update(editingId, payload);
@@ -83,20 +85,49 @@ export default function RegionsPanel({
     return units.filter((u) => u.region_id === regionId).length;
   }
 
+  const sortedRegions = [...regions].sort((a, b) => {
+    // Bairros first (alphabetical), each followed immediately by its sub-bairros.
+    const aTop = a.parent_id || a.id;
+    const bTop = b.parent_id || b.id;
+    if (aTop !== bTop) {
+      const aName = regions.find((r) => r.id === aTop)?.name || "";
+      const bName = regions.find((r) => r.id === bTop)?.name || "";
+      return aName.localeCompare(bName);
+    }
+    if (!a.parent_id && b.parent_id) return -1;
+    if (a.parent_id && !b.parent_id) return 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  // Valid "bairro pai" choices: top-level regions only, excluding the region
+  // being edited and any region that already has sub-bairros of its own
+  // (keeps the hierarchy to exactly two levels).
+  const parentOptions = regions.filter(
+    (r) => !r.parent_id && r.id !== editingId && !regions.some((c) => c.parent_id === r.id && c.id !== editingId)
+  );
+
   return (
     <div className="grid grid-cols-1 gap-6 p-6 lg:grid-cols-[1fr_360px]">
       <div>
         <h2 className="mb-3 text-lg font-semibold text-slate-800">Regiões ({regions.length})</h2>
         <div className="space-y-2">
           {regions.length === 0 && <p className="text-sm text-slate-400">Nenhuma região cadastrada ainda.</p>}
-          {regions.map((region) => (
-            <Card key={region.id} className="flex items-center justify-between px-4 py-3">
+          {sortedRegions.map((region) => (
+            <Card
+              key={region.id}
+              className={`flex items-center justify-between px-4 py-3 ${region.parent_id ? "ml-6 border-dashed" : ""}`}
+            >
               <div className="flex items-start gap-3">
                 <span className="mt-1 h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: region.color }} />
                 <div>
                   <div className="flex items-center gap-2 font-medium text-slate-800">
                     {region.name}
                     {region.code && <Badge>{region.code}</Badge>}
+                    {region.parent_id ? (
+                      <Badge>sub-bairro de {regions.find((r) => r.id === region.parent_id)?.name}</Badge>
+                    ) : (
+                      <Badge color="#0f766e">bairro</Badge>
+                    )}
                     {!region.geojson && <Badge color="#d97706">sem limite desenhado</Badge>}
                   </div>
                   <div className="text-xs text-slate-500">
@@ -126,6 +157,15 @@ export default function RegionsPanel({
           </Field>
           <Field label="Código">
             <Input value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} placeholder="REG-01" />
+          </Field>
+          <Field label="Bairro pai (deixe vazio para criar um Bairro de nível 1)">
+            <Select value={form.parent_id} onChange={(e) => setForm({ ...form, parent_id: e.target.value })}>
+              <option value="">— é um bairro (nível 1) —</option>
+              {parentOptions.map((r) => (
+                <option key={r.id} value={r.id}>{r.name}</option>
+              ))}
+            </Select>
+            {form.parent_id && <p className="mt-1 text-xs text-slate-400">Isso cria um sub-bairro dentro de {regions.find((r) => r.id === form.parent_id)?.name}.</p>}
           </Field>
           <Field label="Cor">
             <div className="flex flex-wrap gap-2">
