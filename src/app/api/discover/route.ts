@@ -6,6 +6,27 @@ import { findPlaces, findStreets, roadDistanceMatrix, OverpassPlace } from "@/li
 
 const COLOR_PALETTE = ["#2563eb", "#dc2626", "#16a34a", "#d97706", "#7c3aed", "#0891b2", "#db2777", "#4b5563", "#0d9488", "#ea580c"];
 
+// Nomes de bairros/localidades esperados dentro da área, informados pelo
+// cliente como referência para VALIDAÇÃO — não são inseridos diretamente.
+// Depois da consulta real ao Overpass, cada nome aqui é conferido contra o
+// que realmente foi encontrado nas fontes geográficas, e o resultado (o que
+// bateu e o que não foi confirmado) é devolvido para o usuário. Isso segue
+// à risca a regra "não inventar, validar antes de exibir".
+const EXPECTED_LOCALITIES: Record<string, string[]> = {
+  "campo grande": [
+    "Comari", "Vila Comari", "Cachamorra", "Caboclos", "Caroba", "Carobinha",
+    "Jardim Letícia", "Jardim Nossa Senhora das Graças", "Parque Esperança",
+    "Pedregoso", "Rio da Prata", "Rio São Paulo", "São Jorge", "Vila Mangueiral",
+    "Vila Vitória", "Nova Aguiar", "Linha de Austin",
+  ],
+  "paciência": ["Jardim Palmares"],
+  cosmos: ["Vila São Jorge", "Vila do Céu", "Parque Resplendor"],
+  "inhoaíba": ["Vila União"],
+  "santíssimo": ["Morro da Esperança"],
+  "senador vasconcelos": ["Jardim Moriçaba"],
+  guaratiba: ["Jardim Maravilha"],
+};
+
 function nearest<T extends { lat: number; lng: number }>(point: { lat: number; lng: number }, candidates: T[]): T | null {
   let best: T | null = null;
   let bestKm = Infinity;
@@ -121,5 +142,32 @@ export async function POST() {
     ruas: streetsInserted,
     distancesComputed,
     distancesEstimated,
+    validation: buildValidationReport(bairros, subBairros),
   });
+}
+
+type ValidationEntry = { bairro: string; found: string[]; notFound: string[] };
+
+/** Compara os nomes esperados (fornecidos como referência) contra o que a
+ * consulta real ao Overpass encontrou, sem nunca inserir os que não foram
+ * confirmados — só relata a diferença. */
+function buildValidationReport(
+  bairros: { name: string }[],
+  subBairros: { name: string }[]
+): ValidationEntry[] {
+  const foundNamesLower = new Set(subBairros.map((s) => s.name.trim().toLowerCase()));
+  const bairroNamesLower = new Set(bairros.map((b) => b.name.trim().toLowerCase()));
+
+  const report: ValidationEntry[] = [];
+  for (const [bairroKey, expected] of Object.entries(EXPECTED_LOCALITIES)) {
+    if (!bairroNamesLower.has(bairroKey)) continue; // esse bairro nem foi confirmado na área — pula
+    const found: string[] = [];
+    const notFound: string[] = [];
+    for (const name of expected) {
+      if (foundNamesLower.has(name.trim().toLowerCase())) found.push(name);
+      else notFound.push(name);
+    }
+    report.push({ bairro: bairroKey.replace(/(^|\s)\S/g, (c) => c.toUpperCase()), found, notFound });
+  }
+  return report;
 }

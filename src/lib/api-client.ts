@@ -14,6 +14,7 @@ export type DiscoverResult = {
   ruas: number;
   distancesComputed: number;
   distancesEstimated: boolean;
+  validation: { bairro: string; found: string[]; notFound: string[] }[];
 };
 
 export const api = {

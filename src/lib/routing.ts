@@ -150,7 +150,7 @@ out center tags;`;
 /** Ruas nomeadas (vias com tag highway=... e name) dentro do polígono
  * informado. Limitado a tipos de via relevantes para navegação/endereço
  * (exclui trilhas, calçadas isoladas, vias em construção etc). */
-export async function findStreets(areaRing: [number, number][], limit = 400): Promise<OverpassStreet[]> {
+export async function findStreets(areaRing: [number, number][], limit = 600): Promise<OverpassStreet[]> {
   const poly = polygonFilter(areaRing);
   const highwayTypes = "motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|primary_link|secondary_link|tertiary_link";
   const ql = `[out:json][timeout:50];

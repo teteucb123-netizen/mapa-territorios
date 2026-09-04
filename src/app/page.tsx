@@ -7,6 +7,7 @@ import BairrosPanel from "@/components/BairrosPanel";
 import DistanciasPanel from "@/components/DistanciasPanel";
 import { Button, Input } from "@/components/ui";
 import { api } from "@/lib/api-client";
+import type { DiscoverResult } from "@/lib/api-client";
 import { Area, Region, Unit } from "@/lib/types";
 
 type Tab = "mapa" | "bairros" | "distancias";
@@ -23,6 +24,7 @@ export default function Home() {
   const [discovering, setDiscovering] = useState(false);
   const [discoverError, setDiscoverError] = useState<string | null>(null);
   const [discoverSummary, setDiscoverSummary] = useState<string | null>(null);
+  const [validation, setValidation] = useState<DiscoverResult["validation"]>([]);
 
   const [flyTo, setFlyTo] = useState<FlyTarget | null>(null);
   const flyTokenRef = useRef(0);
@@ -68,6 +70,7 @@ export default function Home() {
         `${result.bairros} bairro(s), ${result.subBairros} sub-bairro(s) e ${result.ruas} rua(s) identificados` +
           (result.distancesComputed > 0 ? ` · distâncias entre bairros calculadas${result.distancesEstimated ? " (estimadas)" : ""}` : "")
       );
+      setValidation(result.validation);
       await fetchAll();
     } catch (e) {
       setDiscoverError(e instanceof Error ? e.message : "Erro ao identificar bairros e ruas.");
@@ -321,6 +324,25 @@ export default function Home() {
               {discoverError && <span className="text-xs text-red-600">{discoverError}</span>}
               {discoverSummary && <span className="text-xs text-teal-700">{discoverSummary}</span>}
             </div>
+            {validation.length > 0 && (
+              <div className="border-b border-slate-200 bg-amber-50/50 px-6 py-3">
+                <p className="mb-2 text-xs font-medium text-slate-600">
+                  Validação das localidades de referência contra os dados reais do OpenStreetMap:
+                </p>
+                <div className="space-y-1.5">
+                  {validation.map((v) => (
+                    <div key={v.bairro} className="text-xs text-slate-600">
+                      <strong>{v.bairro}:</strong>{" "}
+                      {v.found.length > 0 && <span className="text-teal-700">confirmadas: {v.found.join(", ")}</span>}
+                      {v.found.length > 0 && v.notFound.length > 0 && " · "}
+                      {v.notFound.length > 0 && (
+                        <span className="text-slate-400">não encontradas nas fontes: {v.notFound.join(", ")}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             <BairrosPanel
               regions={regions}
               units={units}
