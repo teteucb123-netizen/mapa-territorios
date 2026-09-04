@@ -1,14 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef } from "react";
 import L from "leaflet";
 import "leaflet-draw";
 import { Area, Region, Unit } from "@/lib/types";
 
-export type MapMode = "normal" | "regions" | "distances" | "routes" | "concentration";
-export type DrawTarget = "area" | { regionId: string } | null;
-
-type RouteSequencePoint = { id: string; name: string; lat: number; lng: number };
+export type DrawTarget = "area" | null;
 
 export type FlyTarget = {
   token: number; // bump to re-trigger even if lat/lng/bounds are unchanged
@@ -26,45 +23,54 @@ export type ConnectorLine = {
 
 export type SearchMarker = { lat: number; lng: number; label: string };
 
+// Ruas só aparecem a partir deste nível de zoom, para não poluir a visão
+// geral — reflete o comportamento "aproximo para ver as ruas" do pedido.
+const RUA_MIN_ZOOM = 15;
+
 type Props = {
   areas: Area[];
   regions: Region[];
   units: Unit[];
-  mode: MapMode;
-  drawTarget: DrawTarget;
+  drawArmedToken: number; // bump this to (re)arm the polygon draw tool (redesenhar área)
   onPolygonDrawn: (coords: [number, number][]) => void;
-  drawArmedToken: number; // bump this to (re)arm the polygon draw tool
-  placingUnit: boolean;
-  onMapClickForUnit: (lat: number, lng: number) => void;
-  onUnitDragEnd: (unitId: string, lat: number, lng: number) => void;
-  onUnitClick: (unit: Unit) => void;
   onRegionClick: (region: Region) => void;
-  distanceSelection: Unit[];
-  routeSequence: RouteSequencePoint[] | null;
+  onUnitClick: (unit: Unit) => void;
   highlightRegionIds: string[];
   highlightUnitId: string | null;
   connectorLine: ConnectorLine | null;
   flyTo: FlyTarget | null;
-  resetViewToken: number; // bump to fit the view back to the full drawn area
+  resetViewToken: number;
   searchMarker: SearchMarker | null;
 };
 
-function regionColor(regions: Region[], regionId: string | null): string {
-  if (!regionId) return "#64748b";
-  return regions.find((r) => r.id === regionId)?.color || "#64748b";
-}
-
-function unitIcon(color: string, selected: boolean) {
+function regionLabelIcon(region: Region, highlighted: boolean) {
+  const isSub = !!region.parent_id;
   return L.divIcon({
     className: "",
     html: `<div style="
-      width:${selected ? 22 : 16}px;height:${selected ? 22 : 16}px;
-      background:${color};border:2px solid white;border-radius:50%;
-      box-shadow:0 1px 4px rgba(0,0,0,.5);
-      ${selected ? "outline:3px solid #facc15;" : ""}
+      display:inline-flex;align-items:center;gap:4px;white-space:nowrap;
+      background:${region.color};color:white;
+      font-size:${isSub ? "10px" : "12px"};font-weight:${isSub ? 500 : 700};
+      padding:${isSub ? "2px 7px" : "4px 10px"};border-radius:9999px;
+      box-shadow:0 1px 4px rgba(0,0,0,.45);
+      ${highlighted ? "outline:3px solid #facc15;" : "border:1.5px solid rgba(255,255,255,.8);"}
+    ">${escapeHtml(region.name)}</div>`,
+    iconSize: undefined,
+    iconAnchor: [isSub ? 30 : 40, isSub ? 10 : 12],
+  });
+}
+
+function unitIcon(highlighted: boolean) {
+  const size = highlighted ? 14 : 9;
+  return L.divIcon({
+    className: "",
+    html: `<div style="
+      width:${size}px;height:${size}px;background:#0f172a;border:2px solid white;border-radius:50%;
+      box-shadow:0 1px 3px rgba(0,0,0,.5);
+      ${highlighted ? "outline:3px solid #facc15;" : ""}
     "></div>`,
-    iconSize: [selected ? 22 : 16, selected ? 22 : 16],
-    iconAnchor: [selected ? 11 : 8, selected ? 11 : 8],
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
   });
 }
 
@@ -72,17 +78,10 @@ export default function MapView({
   areas,
   regions,
   units,
-  mode,
-  drawTarget,
-  onPolygonDrawn,
   drawArmedToken,
-  placingUnit,
-  onMapClickForUnit,
-  onUnitDragEnd,
-  onUnitClick,
+  onPolygonDrawn,
   onRegionClick,
-  distanceSelection,
-  routeSequence,
+  onUnitClick,
   highlightRegionIds,
   highlightUnitId,
   connectorLine,
@@ -95,21 +94,17 @@ export default function MapView({
   const areaLayerRef = useRef<L.LayerGroup | null>(null);
   const regionsLayerRef = useRef<L.LayerGroup | null>(null);
   const unitsLayerRef = useRef<L.LayerGroup | null>(null);
-  const routeLayerRef = useRef<L.LayerGroup | null>(null);
   const connectorLayerRef = useRef<L.LayerGroup | null>(null);
   const searchLayerRef = useRef<L.LayerGroup | null>(null);
   const drawHandlerRef = useRef<L.Draw.Polygon | null>(null);
 
   const onPolygonDrawnRef = useRef(onPolygonDrawn);
-  const onMapClickForUnitRef = useRef(onMapClickForUnit);
-  const placingUnitRef = useRef(placingUnit);
   const areasRef = useRef(areas);
   const regionsRef = useRef(regions);
+  const renderUnitsRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     onPolygonDrawnRef.current = onPolygonDrawn;
-    onMapClickForUnitRef.current = onMapClickForUnit;
-    placingUnitRef.current = placingUnit;
     areasRef.current = areas;
     regionsRef.current = regions;
   });
@@ -118,9 +113,8 @@ export default function MapView({
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
 
-    // Default center: Zona Oeste do Rio de Janeiro (Campo Grande / Guaratiba),
-    // a sensible starting point until the user draws their own area.
-    const map = L.map(containerRef.current, { zoomControl: true }).setView([-22.93, -43.58], 12);
+    // Centro padrão: área de atuação na Zona Oeste do Rio (Guaratiba/Paciência).
+    const map = L.map(containerRef.current, { zoomControl: true }).setView([-22.93, -43.62], 12);
     mapRef.current = map;
 
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -131,7 +125,6 @@ export default function MapView({
     areaLayerRef.current = L.layerGroup().addTo(map);
     regionsLayerRef.current = L.layerGroup().addTo(map);
     unitsLayerRef.current = L.layerGroup().addTo(map);
-    routeLayerRef.current = L.layerGroup().addTo(map);
     connectorLayerRef.current = L.layerGroup().addTo(map);
     searchLayerRef.current = L.layerGroup().addTo(map);
 
@@ -143,11 +136,7 @@ export default function MapView({
       onPolygonDrawnRef.current(latlngs);
     });
 
-    map.on("click", (e: L.LeafletMouseEvent) => {
-      if (placingUnitRef.current) {
-        onMapClickForUnitRef.current(e.latlng.lat, e.latlng.lng);
-      }
-    });
+    map.on("zoomend", () => renderUnitsRef.current());
 
     return () => {
       map.remove();
@@ -155,56 +144,41 @@ export default function MapView({
     };
   }, []);
 
-  // Arm/disarm the polygon draw tool when requested.
+  // Arm the polygon draw tool (só usado para redesenhar a área traçada).
   useEffect(() => {
     const map = mapRef.current;
     if (!map || drawArmedToken === 0) return;
-    if (drawHandlerRef.current) {
-      drawHandlerRef.current.disable();
-    }
+    if (drawHandlerRef.current) drawHandlerRef.current.disable();
     const handler = new L.Draw.Polygon(map as unknown as L.DrawMap, {
-      shapeOptions: { color: drawTarget === "area" ? "#16a34a" : "#2563eb" },
+      shapeOptions: { color: "#16a34a" },
       showArea: true,
     });
     handler.enable();
     drawHandlerRef.current = handler;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [drawArmedToken]);
 
-  // Cursor affordance while placing a unit.
-  useEffect(() => {
-    if (containerRef.current) {
-      containerRef.current.style.cursor = placingUnit ? "crosshair" : "";
-    }
-  }, [placingUnit]);
-
-  // Fly to a requested target — a searched/selected bairro, sub-bairro, rua
-  // or an arbitrary geocoded address. `token` forces the effect to re-run
-  // even when clicking the same item twice in a row.
+  // Fly to a requested target — bairro/sub-bairro/rua selecionado ou
+  // endereço geocodificado. `token` força o efeito a rodar de novo mesmo
+  // clicando duas vezes seguidas no mesmo item.
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !flyTo) return;
     if (flyTo.bounds && flyTo.bounds.length >= 1) {
       const latlngs = flyTo.bounds.map(([lng, lat]) => [lat, lng] as [number, number]);
-      if (latlngs.length === 1) {
-        map.flyTo(latlngs[0], flyTo.zoom ?? 16, { duration: 1 });
-      } else {
-        map.flyToBounds(L.latLngBounds(latlngs), { padding: [60, 60], maxZoom: flyTo.zoom ?? 16, duration: 1 });
-      }
+      if (latlngs.length === 1) map.flyTo(latlngs[0], flyTo.zoom ?? 16, { duration: 1 });
+      else map.flyToBounds(L.latLngBounds(latlngs), { padding: [60, 60], maxZoom: flyTo.zoom ?? 16, duration: 1 });
     } else if (typeof flyTo.lat === "number" && typeof flyTo.lng === "number") {
       map.flyTo([flyTo.lat, flyTo.lng], flyTo.zoom ?? 16, { duration: 1 });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flyTo?.token]);
 
-  // "Voltar para a área completa": fit the view back to the drawn operating
-  // area, or fall back to all regions / all units if no area is drawn yet.
+  // "Voltar para a área completa".
   useEffect(() => {
     const map = mapRef.current;
     if (!map || resetViewToken === 0) return;
     const currentAreas = areasRef.current;
     const currentRegions = regionsRef.current;
-
     if (currentAreas.length > 0 && currentAreas[0].geojson.length > 0) {
       const latlngs = currentAreas[0].geojson.map(([lng, lat]) => [lat, lng] as [number, number]);
       map.flyToBounds(L.latLngBounds(latlngs), { padding: [40, 40], duration: 1 });
@@ -217,10 +191,10 @@ export default function MapView({
       map.flyToBounds(L.latLngBounds(regionPoints), { padding: [60, 60], duration: 1 });
       return;
     }
-    map.flyTo([-22.93, -43.58], 12, { duration: 1 });
+    map.flyTo([-22.93, -43.62], 12, { duration: 1 });
   }, [resetViewToken]);
 
-  // Redraw area.
+  // Área traçada (referência principal).
   useEffect(() => {
     const layer = areaLayerRef.current;
     if (!layer) return;
@@ -231,87 +205,60 @@ export default function MapView({
     });
   }, [areas]);
 
-  // Redraw regions (bairros e sub-bairros).
+  // Bairros e sub-bairros — polígono quando existir, ou um rótulo no ponto
+  // central (o caso mais comum vindo do Overpass).
   useEffect(() => {
     const layer = regionsLayerRef.current;
     if (!layer) return;
     layer.clearLayers();
-    if (mode !== "regions" && mode !== "normal" && mode !== "concentration" && mode !== "distances") return;
     regions.forEach((region) => {
-      if (!region.geojson || region.geojson.length < 3) return;
       const isHighlighted = highlightRegionIds.includes(region.id);
-      const isSubBairro = !!region.parent_id;
-      const latlngs = region.geojson.map(([lng, lat]) => [lat, lng] as [number, number]);
-      const polygon = L.polygon(latlngs, {
-        color: region.color,
-        weight: isHighlighted ? 4 : isSubBairro ? 1.5 : 2,
-        dashArray: isSubBairro ? "4 4" : undefined,
-        fillColor: region.color,
-        fillOpacity: isHighlighted ? 0.5 : mode === "regions" ? 0.25 : 0.1,
-      })
-        .bindTooltip(`${region.name}${isSubBairro ? " (sub-bairro)" : ""}`, { permanent: false, direction: "center" })
-        .on("click", () => onRegionClick(region))
-        .addTo(layer);
-      if (isHighlighted) polygon.bringToFront();
+      const isSub = !!region.parent_id;
+
+      if (region.geojson && region.geojson.length >= 3) {
+        const latlngs = region.geojson.map(([lng, lat]) => [lat, lng] as [number, number]);
+        const polygon = L.polygon(latlngs, {
+          color: region.color,
+          weight: isHighlighted ? 4 : isSub ? 1.5 : 2,
+          dashArray: isSub ? "4 4" : undefined,
+          fillColor: region.color,
+          fillOpacity: isHighlighted ? 0.45 : 0.15,
+        })
+          .on("click", () => onRegionClick(region))
+          .addTo(layer);
+        if (isHighlighted) polygon.bringToFront();
+      }
+
+      if (region.centroid_lat != null && region.centroid_lng != null) {
+        L.marker([region.centroid_lat, region.centroid_lng], { icon: regionLabelIcon(region, isHighlighted) })
+          .on("click", () => onRegionClick(region))
+          .addTo(layer);
+      }
     });
-  }, [regions, mode, highlightRegionIds, onRegionClick]);
+  }, [regions, highlightRegionIds, onRegionClick]);
 
-  const handleUnitDragEnd = useCallback(
-    (unitId: string, marker: L.Marker) => {
-      const pos = marker.getLatLng();
-      onUnitDragEnd(unitId, pos.lat, pos.lng);
-    },
-    [onUnitDragEnd]
-  );
-
-  // Redraw units (ruas / pontos).
+  // Ruas — só a partir de RUA_MIN_ZOOM, para não poluir a visão geral.
+  // Reagem tanto a mudanças de dados quanto ao evento "zoomend" do mapa.
   useEffect(() => {
-    const layer = unitsLayerRef.current;
-    if (!layer) return;
-    layer.clearLayers();
-    units.forEach((unit) => {
-      const isSelected = distanceSelection.some((u) => u.id === unit.id) || unit.id === highlightUnitId;
-      const color = regionColor(regions, unit.region_id);
-      const marker = L.marker([unit.lat, unit.lng], {
-        icon: unitIcon(color, isSelected),
-        draggable: true,
+    renderUnitsRef.current = () => {
+      const layer = unitsLayerRef.current;
+      const map = mapRef.current;
+      if (!layer || !map) return;
+      layer.clearLayers();
+      if (map.getZoom() < RUA_MIN_ZOOM) return;
+      units.forEach((unit) => {
+        const isHighlighted = unit.id === highlightUnitId;
+        const marker = L.marker([unit.lat, unit.lng], { icon: unitIcon(isHighlighted) });
+        marker.bindTooltip(unit.name, { direction: "top", offset: [0, -6] });
+        marker.on("click", () => onUnitClick(unit));
+        marker.addTo(layer);
+        if (isHighlighted) marker.setZIndexOffset(1000);
       });
-      marker.bindPopup(
-        `<strong>${escapeHtml(unit.name)}</strong><br/>${escapeHtml(unit.address || "")}<br/><em>${escapeHtml(
-          unit.type || ""
-        )}</em>`
-      );
-      marker.on("click", () => onUnitClick(unit));
-      marker.on("dragend", () => handleUnitDragEnd(unit.id, marker));
-      marker.addTo(layer);
-      if (isSelected) marker.setZIndexOffset(1000);
-    });
-  }, [units, regions, distanceSelection, highlightUnitId, onUnitClick, handleUnitDragEnd]);
+    };
+    renderUnitsRef.current();
+  }, [units, highlightUnitId, onUnitClick]);
 
-  // Draw the currently selected route as connected segments.
-  useEffect(() => {
-    const layer = routeLayerRef.current;
-    if (!layer) return;
-    layer.clearLayers();
-    if (!routeSequence || routeSequence.length < 2) return;
-    const latlngs = routeSequence.map((p) => [p.lat, p.lng] as [number, number]);
-    L.polyline(latlngs, { color: "#dc2626", weight: 4, dashArray: "2 8" }).addTo(layer);
-    routeSequence.forEach((p, idx) => {
-      L.marker([p.lat, p.lng], {
-        icon: L.divIcon({
-          className: "",
-          html: `<div style="background:#dc2626;color:white;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,.5)">${idx}</div>`,
-          iconSize: [22, 22],
-          iconAnchor: [11, 11],
-        }),
-      })
-        .bindTooltip(p.name)
-        .addTo(layer);
-    });
-  }, [routeSequence]);
-
-  // Draw the "Bairro A ↔ Bairro B" connector line (from clicking a
-  // distance-matrix cell).
+  // Linha conectando dois bairros (clique numa distância na aba Distâncias).
   useEffect(() => {
     const layer = connectorLayerRef.current;
     if (!layer) return;
@@ -325,25 +272,13 @@ export default function MapView({
       ],
       { color: "#9333ea", weight: 3, dashArray: "6 6" }
     ).addTo(layer);
-    [a, b].forEach((p) => {
-      L.marker([p.lat, p.lng], {
-        icon: L.divIcon({
-          className: "",
-          html: `<div style="background:#9333ea;border:3px solid white;border-radius:50%;width:18px;height:18px;box-shadow:0 1px 4px rgba(0,0,0,.5)"></div>`,
-          iconSize: [18, 18],
-          iconAnchor: [9, 9],
-        }),
-      })
-        .bindTooltip(p.name, { permanent: true, direction: "top" })
-        .addTo(layer);
-    });
     if (label) {
       const midLat = (a.lat + b.lat) / 2;
       const midLng = (a.lng + b.lng) / 2;
       L.marker([midLat, midLng], {
         icon: L.divIcon({
           className: "",
-          html: `<div style="background:#9333ea;color:white;font-size:11px;font-weight:600;padding:2px 6px;border-radius:9999px;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.5)">${escapeHtml(
+          html: `<div style="background:#9333ea;color:white;font-size:11px;font-weight:600;padding:2px 8px;border-radius:9999px;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.5)">${escapeHtml(
             label
           )}</div>`,
           iconSize: [0, 0],
@@ -352,7 +287,7 @@ export default function MapView({
     }
   }, [connectorLine]);
 
-  // Ad-hoc search-result marker (address not matched to an existing bairro/unidade).
+  // Marcador de busca (endereço geocodificado que não bate com nenhum bairro/rua cadastrada).
   useEffect(() => {
     const layer = searchLayerRef.current;
     if (!layer) return;

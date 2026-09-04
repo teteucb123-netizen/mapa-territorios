@@ -32,66 +32,6 @@ export async function roadDistance(a: LatLng, b: LatLng): Promise<RoadResult> {
   }
 }
 
-/** Optimized visiting order for one origin + several stops, via OSRM's
- * Trip service (solves an open TSP). Returns stop indices (into `stops`)
- * in the suggested visiting order, plus total distance/time. Falls back to
- * the original input order, estimated via haversine, if OSRM is unreachable. */
-export async function optimizedTrip(
-  origin: LatLng,
-  stops: LatLng[]
-): Promise<{ order: number[]; km: number; minutes: number; estimated: boolean }> {
-  const points = [origin, ...stops];
-  const coords = points.map((p) => `${p.lng},${p.lat}`).join(";");
-  const url = `${OSRM_BASE}/trip/v1/driving/${coords}?source=first&roundtrip=false&overview=false`;
-
-  try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
-    if (!res.ok) throw new Error(`OSRM HTTP ${res.status}`);
-    const data = await res.json();
-    const trip = data?.trips?.[0];
-    const waypoints = data?.waypoints;
-    if (!trip || !waypoints) throw new Error("OSRM: no trip found");
-
-    // waypoints[i].waypoint_index tells us the visiting order for input
-    // point i (0 = origin). We want stop order (indices into `stops`,
-    // i.e. input index - 1), sorted by visiting sequence.
-    const stopWaypoints = waypoints
-      .map((w: { waypoint_index: number }, inputIdx: number) => ({ inputIdx, seq: w.waypoint_index }))
-      .filter((w: { inputIdx: number }) => w.inputIdx !== 0)
-      .sort((a: { seq: number }, b: { seq: number }) => a.seq - b.seq)
-      .map((w: { inputIdx: number }) => w.inputIdx - 1);
-
-    return {
-      order: stopWaypoints,
-      km: trip.distance / 1000,
-      minutes: trip.duration / 60,
-      estimated: false,
-    };
-  } catch {
-    // Fallback: simple nearest-neighbor heuristic on straight-line distance.
-    const remaining = stops.map((s, i) => ({ ...s, i }));
-    const order: number[] = [];
-    let current = origin;
-    let totalKm = 0;
-    while (remaining.length > 0) {
-      let bestIdx = 0;
-      let bestKm = Infinity;
-      remaining.forEach((p, idx) => {
-        const d = haversineKm(current, p);
-        if (d < bestKm) {
-          bestKm = d;
-          bestIdx = idx;
-        }
-      });
-      const next = remaining.splice(bestIdx, 1)[0];
-      order.push(next.i);
-      totalKm += bestKm;
-      current = next;
-    }
-    return { order, km: totalKm, minutes: estimateMinutesFromKm(totalKm), estimated: true };
-  }
-}
-
 /** Full pairwise road-distance/duration matrix for a set of points, via
  * OSRM's Table service — one HTTP call instead of N² route calls. Falls
  * back to a haversine-based matrix (flagged as estimated) if unreachable.
@@ -140,4 +80,94 @@ export async function geocodeAddress(query: string): Promise<GeocodeResult | nul
   const first = data?.[0];
   if (!first) return null;
   return { lat: parseFloat(first.lat), lng: parseFloat(first.lon), displayName: first.display_name };
+}
+
+// --- Overpass API: identificação de bairros/sub-bairros/ruas reais dentro
+// de um polígono, a partir de dados do OpenStreetMap. Servidor público
+// gratuito, sem chave — mesma filosofia do OSRM/Nominatim acima. ---
+const OVERPASS_BASE = process.env.OVERPASS_BASE_URL || "https://overpass-api.de/api/interpreter";
+
+export type OverpassPlace = { name: string; lat: number; lng: number; placeType: string };
+export type OverpassStreet = { name: string; lat: number; lng: number };
+
+function polygonFilter(ring: [number, number][]): string {
+  // Overpass "poly" filter expects "lat lon lat lon ..." (latitude first),
+  // while this app stores rings as [lng, lat] pairs everywhere else.
+  return ring.map(([lng, lat]) => `${lat} ${lng}`).join(" ");
+}
+
+async function runOverpassQuery(ql: string): Promise<{ elements: OverpassElement[] }> {
+  const res = await fetch(OVERPASS_BASE, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: `data=${encodeURIComponent(ql)}`,
+    signal: AbortSignal.timeout(55000),
+  });
+  if (!res.ok) throw new Error(`Overpass HTTP ${res.status}`);
+  return res.json();
+}
+
+type OverpassElement = {
+  type: "node" | "way" | "relation";
+  tags?: Record<string, string>;
+  lat?: number;
+  lon?: number;
+  center?: { lat: number; lon: number };
+};
+
+function elementPoint(el: OverpassElement): { lat: number; lng: number } | null {
+  if (typeof el.lat === "number" && typeof el.lon === "number") return { lat: el.lat, lng: el.lon };
+  if (el.center) return { lat: el.center.lat, lng: el.center.lon };
+  return null;
+}
+
+/** Bairros, sub-bairros e localidades (nós/vias com tag place=...) dentro
+ * do polígono informado. */
+export async function findPlaces(areaRing: [number, number][]): Promise<OverpassPlace[]> {
+  const poly = polygonFilter(areaRing);
+  const ql = `[out:json][timeout:50];
+(
+  node["place"~"^(suburb|neighbourhood|quarter|hamlet|locality)$"]["name"](poly:"${poly}");
+  way["place"~"^(suburb|neighbourhood|quarter|hamlet|locality)$"]["name"](poly:"${poly}");
+);
+out center tags;`;
+  const data = await runOverpassQuery(ql);
+  const seen = new Set<string>();
+  const results: OverpassPlace[] = [];
+  for (const el of data.elements) {
+    const name = el.tags?.name;
+    const placeType = el.tags?.place;
+    const point = elementPoint(el);
+    if (!name || !placeType || !point) continue;
+    const key = name.trim().toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    results.push({ name: name.trim(), lat: point.lat, lng: point.lng, placeType });
+  }
+  return results;
+}
+
+/** Ruas nomeadas (vias com tag highway=... e name) dentro do polígono
+ * informado. Limitado a tipos de via relevantes para navegação/endereço
+ * (exclui trilhas, calçadas isoladas, vias em construção etc). */
+export async function findStreets(areaRing: [number, number][], limit = 400): Promise<OverpassStreet[]> {
+  const poly = polygonFilter(areaRing);
+  const highwayTypes = "motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|primary_link|secondary_link|tertiary_link";
+  const ql = `[out:json][timeout:50];
+way["highway"~"^(${highwayTypes})$"]["name"](poly:"${poly}");
+out center tags;`;
+  const data = await runOverpassQuery(ql);
+  const seen = new Set<string>();
+  const results: OverpassStreet[] = [];
+  for (const el of data.elements) {
+    const name = el.tags?.name;
+    const point = elementPoint(el);
+    if (!name || !point) continue;
+    const key = name.trim().toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    results.push({ name: name.trim(), lat: point.lat, lng: point.lng });
+    if (results.length >= limit) break;
+  }
+  return results;
 }

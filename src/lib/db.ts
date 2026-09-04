@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
+import { randomUUID } from "crypto";
 
 // SQLite database file. In production on a host with a persistent disk
 // (Railway, Render, VPS) this file survives restarts. On serverless hosts
@@ -26,18 +27,7 @@ db.exec(`
 CREATE TABLE IF NOT EXISTS areas (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
-  geojson TEXT NOT NULL,        -- GeoJSON Polygon coordinates as JSON
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS teams (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  responsible TEXT,
-  members TEXT,                 -- JSON array of strings
-  vehicle TEXT,
-  notes TEXT,
+  geojson TEXT NOT NULL,        -- GeoJSON Polygon coordinates as JSON, ring of [lng, lat]
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -47,13 +37,13 @@ CREATE TABLE IF NOT EXISTS regions (
   name TEXT NOT NULL,
   code TEXT,
   color TEXT NOT NULL DEFAULT '#2563eb',
-  geojson TEXT,                 -- GeoJSON Polygon coordinates as JSON (nullable until drawn)
+  geojson TEXT,                 -- GeoJSON Polygon coordinates as JSON (bairros/sub-bairros vindos do Overpass geralmente não têm polígono, só ponto central)
   responsible TEXT,
-  team_id TEXT REFERENCES teams(id) ON DELETE SET NULL,
   notes TEXT,
   centroid_lat REAL,
   centroid_lng REAL,
-  parent_id TEXT REFERENCES regions(id) ON DELETE SET NULL,  -- NULL = Bairro (top level); set = Sub-bairro (child of a Bairro)
+  parent_id TEXT REFERENCES regions(id) ON DELETE SET NULL,  -- NULL = Bairro (nível 1); preenchido = Sub-bairro (nível 2)
+  source TEXT NOT NULL DEFAULT 'manual',  -- 'overpass' (identificado automaticamente) | 'manual'
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -71,38 +61,66 @@ CREATE TABLE IF NOT EXISTS units (
   lng REAL NOT NULL,
   region_id TEXT REFERENCES regions(id) ON DELETE SET NULL,
   responsible TEXT,
-  team_id TEXT REFERENCES teams(id) ON DELETE SET NULL,
   type TEXT,
   phone TEXT,
   notes TEXT,
+  source TEXT NOT NULL DEFAULT 'manual',  -- 'overpass' (rua identificada automaticamente) | 'manual'
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE IF NOT EXISTS routes (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  origin_unit_id TEXT REFERENCES units(id) ON DELETE SET NULL,
-  stop_unit_ids TEXT NOT NULL,   -- JSON array of unit ids, in sequence
-  total_km REAL,
-  total_min REAL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+-- Distâncias entre bairros (nível 1) já calculadas e armazenadas — a aba
+-- Distâncias só LÊ esta tabela, nunca recalcula na hora.
+CREATE TABLE IF NOT EXISTS bairro_distances (
+  origin_id TEXT NOT NULL REFERENCES regions(id) ON DELETE CASCADE,
+  dest_id TEXT NOT NULL REFERENCES regions(id) ON DELETE CASCADE,
+  km REAL NOT NULL,
+  minutes REAL,
+  estimated INTEGER NOT NULL DEFAULT 0,
+  computed_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (origin_id, dest_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_units_region ON units(region_id);
-CREATE INDEX IF NOT EXISTS idx_units_team ON units(team_id);
-CREATE INDEX IF NOT EXISTS idx_regions_team ON regions(team_id);
+CREATE INDEX IF NOT EXISTS idx_regions_parent ON regions(parent_id);
 `);
 
-// Lightweight migration: older databases created before "parent_id" existed
-// (Bairro/Sub-bairro hierarchy) won't have the column yet. Add it in place
-// instead of losing data.
-const regionColumns = db.prepare(`PRAGMA table_info(regions)`).all() as { name: string }[];
-if (!regionColumns.some((c) => c.name === "parent_id")) {
-  db.exec(`ALTER TABLE regions ADD COLUMN parent_id TEXT REFERENCES regions(id) ON DELETE SET NULL`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_regions_parent ON regions(parent_id)`);
+// --- Lightweight migrations for databases created by earlier versions of
+// this app (adding columns in place instead of losing existing data). ---
+function ensureColumn(table: string, column: string, ddl: string) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+  }
 }
+ensureColumn("regions", "parent_id", `parent_id TEXT REFERENCES regions(id) ON DELETE SET NULL`);
+ensureColumn("regions", "source", `source TEXT NOT NULL DEFAULT 'manual'`);
+ensureColumn("units", "source", `source TEXT NOT NULL DEFAULT 'manual'`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_regions_parent ON regions(parent_id)`);
 
-export function touch(table: string, id: string) {
-  db.prepare(`UPDATE ${table} SET updated_at = datetime('now') WHERE id = ?`).run(id);
+// --- Seed the pre-traced operating area on first run, reconstructed from
+// the reference map the client provided (Zona Oeste do Rio: Paciência,
+// Cosmos, Inhoaíba, Senador Vasconcelos, Santíssimo, Guaratiba, Ilha de
+// Guaratiba, Pedra de Guaratiba). This is an approximate redraw from a flat
+// screenshot, not a georeferenced source — adjust with "Redesenhar área" on
+// the map if it doesn't quite match. ---
+const SEED_AREA: [number, number][] = [
+  [-43.665, -22.865],
+  [-43.62, -22.858],
+  [-43.595, -22.865],
+  [-43.585, -22.9],
+  [-43.595, -22.95],
+  [-43.575, -22.99],
+  [-43.605, -23.015],
+  [-43.665, -23.01],
+  [-43.675, -22.95],
+];
+
+const areaCount = (db.prepare(`SELECT COUNT(*) AS c FROM areas`).get() as { c: number }).c;
+if (areaCount === 0) {
+  db.prepare(`INSERT INTO areas (id, name, geojson) VALUES (?, ?, ?)`).run(
+    randomUUID(),
+    "Área de atuação (Zona Oeste — Guaratiba/Paciência)",
+    JSON.stringify(SEED_AREA)
+  );
 }

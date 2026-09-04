@@ -1,4 +1,4 @@
-import { Area, Region, Team, Unit, RouteRecord } from "./types";
+import { Area, Region, Unit } from "./types";
 
 function parseJson<T>(value: unknown, fallback: T): T {
   if (typeof value !== "string" || value.length === 0) return fallback;
@@ -7,11 +7,6 @@ function parseJson<T>(value: unknown, fallback: T): T {
   } catch {
     return fallback;
   }
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function toTeam(row: any): Team {
-  return { ...row, members: parseJson<string[]>(row.members, []) };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -27,9 +22,4 @@ export function toUnit(row: any): Unit {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function toArea(row: any): Area {
   return { ...row, geojson: parseJson<[number, number][]>(row.geojson, []) };
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function toRoute(row: any): RouteRecord {
-  return { ...row, stop_unit_ids: parseJson<string[]>(row.stop_unit_ids, []) };
 }

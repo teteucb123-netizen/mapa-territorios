@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Region, Unit } from "@/lib/types";
-import { Badge, Card } from "./ui";
+import { Card } from "./ui";
 
 export default function BairrosPanel({
   regions,
@@ -122,7 +122,6 @@ export default function BairrosPanel({
           <button onClick={() => onSelectRegion(region)} className="flex flex-1 items-center gap-2 text-left">
             <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: region.color }} />
             <span className={`truncate text-sm ${isSub ? "text-slate-600" : "font-medium text-slate-800"}`}>{region.name}</span>
-            {!region.geojson && <Badge color="#d97706">sem limite</Badge>}
           </button>
         </div>
         {isOpen && (
@@ -140,33 +139,28 @@ export default function BairrosPanel({
   }
 
   return (
-    <div className="p-6">
-      <h2 className="mb-1 text-lg font-semibold text-slate-800">Bairros e Localizações</h2>
-      <p className="mb-4 text-sm text-slate-500">
-        Clique em um bairro, sub-bairro ou rua para localizar e destacar no mapa.
-      </p>
-      <Card className="p-2">
-        {bairros.length === 0 && (
-          <p className="p-3 text-sm text-slate-400">
-            Nenhum bairro cadastrado ainda — crie regiões na aba Regiões para começar a árvore.
-          </p>
-        )}
-        <div className="space-y-0.5">
-          {bairros.map((b) => (
-            <RegionRow key={b.id} region={b} isSub={false} />
-          ))}
-        </div>
-        {unitsWithoutRegion.length > 0 && (
-          <div className="mt-2 border-t border-slate-100 pt-2">
-            <div className="px-2 py-1 text-xs font-medium uppercase tracking-wide text-slate-400">Sem bairro</div>
-            <div className="space-y-0.5">
-              {unitsWithoutRegion.map((u) => (
-                <UnitRow key={u.id} unit={u} />
-              ))}
-            </div>
+    <Card className="p-2">
+      {bairros.length === 0 && (
+        <p className="p-3 text-sm text-slate-400">
+          Nenhum bairro identificado ainda. Use o botão &quot;Identificar bairros e ruas&quot; para consultar dados
+          geográficos reais dentro da área traçada.
+        </p>
+      )}
+      <div className="space-y-0.5">
+        {bairros.map((b) => (
+          <RegionRow key={b.id} region={b} isSub={false} />
+        ))}
+      </div>
+      {unitsWithoutRegion.length > 0 && (
+        <div className="mt-2 border-t border-slate-100 pt-2">
+          <div className="px-2 py-1 text-xs font-medium uppercase tracking-wide text-slate-400">Sem bairro</div>
+          <div className="space-y-0.5">
+            {unitsWithoutRegion.map((u) => (
+              <UnitRow key={u.id} unit={u} />
+            ))}
           </div>
-        )}
-      </Card>
-    </div>
+        </div>
+      )}
+    </Card>
   );
 }

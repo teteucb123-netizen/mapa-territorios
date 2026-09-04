@@ -2,60 +2,28 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import MapView from "@/components/MapViewClient";
-import type { ConnectorLine, DrawTarget, FlyTarget, MapMode, SearchMarker } from "@/components/MapView";
-import RegionsPanel from "@/components/RegionsPanel";
-import UnitsPanel from "@/components/UnitsPanel";
+import type { ConnectorLine, FlyTarget, SearchMarker } from "@/components/MapView";
 import BairrosPanel from "@/components/BairrosPanel";
-import TeamsPanel from "@/components/TeamsPanel";
-import DistanceMatrixPanel from "@/components/DistanceMatrixPanel";
-import RoutePlannerPanel from "@/components/RoutePlannerPanel";
-import DashboardPanel from "@/components/DashboardPanel";
-import { Button, Input, Select } from "@/components/ui";
+import DistanciasPanel from "@/components/DistanciasPanel";
+import { Button, Input } from "@/components/ui";
 import { api } from "@/lib/api-client";
-import { Area, Region, Team, Unit } from "@/lib/types";
+import { Area, Region, Unit } from "@/lib/types";
 
-type Tab = "mapa" | "bairros" | "regioes" | "unidades" | "equipes" | "distancias" | "rotas" | "dashboard";
-type Sequence = { id: string; name: string; lat: number; lng: number }[];
-
-const TABS: { id: Tab; label: string }[] = [
-  { id: "mapa", label: "Mapa" },
-  { id: "bairros", label: "Bairros" },
-  { id: "regioes", label: "Regiões" },
-  { id: "unidades", label: "Unidades" },
-  { id: "equipes", label: "Equipes" },
-  { id: "distancias", label: "Distâncias" },
-  { id: "rotas", label: "Rotas" },
-  { id: "dashboard", label: "Dashboard" },
-];
+type Tab = "mapa" | "distancias";
 
 export default function Home() {
   const [tab, setTab] = useState<Tab>("mapa");
   const [areas, setAreas] = useState<Area[]>([]);
   const [regions, setRegions] = useState<Region[]>([]);
   const [units, setUnits] = useState<Unit[]>([]);
-  const [teams, setTeams] = useState<Team[]>([]);
   const [loaded, setLoaded] = useState(false);
 
-  const [mapMode, setMapMode] = useState<MapMode>("normal");
-  const [drawTarget, setDrawTarget] = useState<DrawTarget>(null);
   const [drawArmedToken, setDrawArmedToken] = useState(0);
-  const [placingUnit, setPlacingUnit] = useState(false);
-  const [pendingCoords, setPendingCoords] = useState<{ lat: number; lng: number } | null>(null);
-  const [focusUnitId, setFocusUnitId] = useState<string | null>(null);
 
-  const [distanceSelection, setDistanceSelection] = useState<Unit[]>([]);
-  const [distanceResult, setDistanceResult] = useState<{
-    straight_line_km: number;
-    road_km: number;
-    road_minutes: number;
-    road_estimated: boolean;
-  } | null>(null);
+  const [discovering, setDiscovering] = useState(false);
+  const [discoverError, setDiscoverError] = useState<string | null>(null);
+  const [discoverSummary, setDiscoverSummary] = useState<string | null>(null);
 
-  const [routeSequence, setRouteSequence] = useState<Sequence | null>(null);
-
-  // Navigation / highlight state shared between the map and every list
-  // (Bairros, Regiões, Distâncias) so clicking in one place is reflected
-  // in the other, per the "lista ↔ mapa" behavior.
   const [flyTo, setFlyTo] = useState<FlyTarget | null>(null);
   const flyTokenRef = useRef(0);
   const [resetViewToken, setResetViewToken] = useState(0);
@@ -68,11 +36,10 @@ export default function Home() {
   const [searching, setSearching] = useState(false);
 
   const fetchAll = useCallback(async () => {
-    const [a, r, u, t] = await Promise.all([api.areas.list(), api.regions.list(), api.units.list(), api.teams.list()]);
+    const [a, r, u] = await Promise.all([api.areas.list(), api.regions.list(), api.units.list()]);
     setAreas(a);
     setRegions(r);
     setUnits(u);
-    setTeams(t);
     setLoaded(true);
   }, []);
 
@@ -82,38 +49,31 @@ export default function Home() {
   }, [fetchAll]);
 
   function requestDrawArea() {
-    setDrawTarget("area");
     setDrawArmedToken((n) => n + 1);
-    setTab("mapa");
-  }
-
-  function requestDrawRegion(regionId: string) {
-    setDrawTarget({ regionId });
-    setDrawArmedToken((n) => n + 1);
-    setMapMode("regions");
-    setTab("mapa");
   }
 
   async function handlePolygonDrawn(coords: [number, number][]) {
-    if (drawTarget === "area") {
-      if (areas.length > 0) await api.areas.update(areas[0].id, { geojson: coords });
-      else await api.areas.create({ name: "Área de atuação", geojson: coords });
-    } else if (drawTarget && typeof drawTarget === "object") {
-      await api.regions.update(drawTarget.regionId, { geojson: coords });
+    if (areas.length > 0) await api.areas.update(areas[0].id, { geojson: coords });
+    else await api.areas.create({ name: "Área de atuação", geojson: coords });
+    await fetchAll();
+  }
+
+  async function runDiscovery() {
+    setDiscovering(true);
+    setDiscoverError(null);
+    setDiscoverSummary(null);
+    try {
+      const result = await api.discover();
+      setDiscoverSummary(
+        `${result.bairros} bairro(s), ${result.subBairros} sub-bairro(s) e ${result.ruas} rua(s) identificados` +
+          (result.distancesComputed > 0 ? ` · distâncias entre bairros calculadas${result.distancesEstimated ? " (estimadas)" : ""}` : "")
+      );
+      await fetchAll();
+    } catch (e) {
+      setDiscoverError(e instanceof Error ? e.message : "Erro ao identificar bairros e ruas.");
+    } finally {
+      setDiscovering(false);
     }
-    setDrawTarget(null);
-    await fetchAll();
-  }
-
-  function handleMapClickForUnit(lat: number, lng: number) {
-    setPendingCoords({ lat, lng });
-    setPlacingUnit(false);
-    setTab("unidades");
-  }
-
-  async function handleUnitDragEnd(unitId: string, lat: number, lng: number) {
-    await api.units.update(unitId, { lat, lng });
-    await fetchAll();
   }
 
   function flyToPoint(lat: number, lng: number, zoom = 16) {
@@ -126,14 +86,12 @@ export default function Home() {
     setFlyTo({ token: flyTokenRef.current, bounds: coords, zoom });
   }
 
-  // LISTA → MAPA: localizar e destacar um bairro/sub-bairro (chamado pela
-  // aba Bairros, ou pela aba Regiões).
+  // LISTA → MAPA: localizar e destacar um bairro/sub-bairro.
   function focusRegion(region: Region) {
     setHighlightRegionIds([region.id]);
     setHighlightUnitId(null);
     setConnectorLine(null);
     setSearchMarker(null);
-    setMapMode("regions");
     if (region.geojson && region.geojson.length > 0) {
       flyToBoundsCoords(region.geojson, region.parent_id ? 16 : 14);
     } else if (region.centroid_lat != null && region.centroid_lng != null) {
@@ -142,7 +100,7 @@ export default function Home() {
     setTab("mapa");
   }
 
-  // LISTA → MAPA: localizar e destacar uma rua/unidade.
+  // LISTA → MAPA: localizar e destacar uma rua.
   function focusUnit(unit: Unit) {
     setHighlightUnitId(unit.id);
     setHighlightRegionIds([]);
@@ -152,33 +110,20 @@ export default function Home() {
     setTab("mapa");
   }
 
-  // MAPA → LISTA: clicar num polígono de bairro/sub-bairro destaca o item
-  // correspondente nas listas, sem forçar navegação (o usuário já está
-  // olhando o mapa).
+  // MAPA → LISTA: clicar num bairro/rua no mapa destaca o item correspondente
+  // no painel lateral, sem forçar navegação.
   function handleRegionMapClick(region: Region) {
     setHighlightRegionIds([region.id]);
     setHighlightUnitId(null);
   }
-
-  async function handleUnitClick(unit: Unit) {
-    setFocusUnitId(unit.id);
+  function handleUnitMapClick(unit: Unit) {
     setHighlightUnitId(unit.id);
     setHighlightRegionIds([]);
-    if (mapMode !== "distances") return;
-
-    setDistanceSelection((prev) => {
-      const exists = prev.some((u) => u.id === unit.id);
-      let next: Unit[];
-      if (exists) next = prev.filter((u) => u.id !== unit.id);
-      else if (prev.length >= 2) next = [prev[1], unit];
-      else next = [...prev, unit];
-      return next;
-    });
   }
 
-  // Aba Distâncias: clicar em "Bairro A → Bairro B — X km" mostra os dois
-  // bairros conectados por uma linha no mapa.
-  function handleDistanceCellClick(originId: string, destId: string, km: number) {
+  // Aba Distâncias: clicar num par "Bairro A → Bairro B" mostra os dois
+  // conectados por uma linha no mapa.
+  function handleSelectPair(originId: string, destId: string, km: number) {
     const a = regions.find((r) => r.id === originId);
     const b = regions.find((r) => r.id === destId);
     if (!a || !b || a.centroid_lat == null || a.centroid_lng == null || b.centroid_lat == null || b.centroid_lng == null) return;
@@ -190,7 +135,6 @@ export default function Home() {
     setHighlightRegionIds([a.id, b.id]);
     setHighlightUnitId(null);
     setSearchMarker(null);
-    setMapMode("regions");
     flyToBoundsCoords(
       [
         [a.centroid_lng, a.centroid_lat],
@@ -238,7 +182,7 @@ export default function Home() {
     let bestUnit: Unit | undefined;
     let bestUnitScore = 0;
     for (const u of units) {
-      const s = Math.max(score(u.name), score(u.address || ""), score(u.neighborhood || ""), score(u.city || ""));
+      const s = score(u.name);
       if (s > bestUnitScore) {
         bestUnitScore = s;
         bestUnit = u;
@@ -271,44 +215,30 @@ export default function Home() {
     }
   }
 
-  useEffect(() => {
-    if (distanceSelection.length === 2) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- clear stale result before the new distance call resolves
-      setDistanceResult(null);
-      api.distance(
-        { lat: distanceSelection[0].lat, lng: distanceSelection[0].lng },
-        { lat: distanceSelection[1].lat, lng: distanceSelection[1].lng }
-      ).then(setDistanceResult);
-    } else {
-      setDistanceResult(null);
-    }
-  }, [distanceSelection]);
+  const selectedRegionId = highlightRegionIds.length === 1 ? highlightRegionIds[0] : null;
 
-  const drawTargetLabel = useMemo(() => {
-    if (drawTarget === "area") return "Área de atuação";
-    if (drawTarget && typeof drawTarget === "object") {
-      return regions.find((r) => r.id === drawTarget.regionId)?.name || "região";
-    }
-    return null;
-  }, [drawTarget, regions]);
+  const bairroCount = useMemo(() => regions.filter((r) => !r.parent_id).length, [regions]);
 
   return (
     <div className="flex h-full min-h-screen flex-col">
       <header className="flex shrink-0 items-center justify-between border-b border-slate-200 bg-slate-900 px-5 py-3">
         <div>
           <h1 className="text-sm font-semibold text-white">Mapa de Territórios</h1>
-          <p className="text-xs text-slate-400">Bairros, sub-bairros, ruas, distâncias e rotas</p>
+          <p className="text-xs text-slate-400">Bairros, sub-bairros e ruas — distâncias entre bairros</p>
         </div>
-        <nav className="flex flex-wrap gap-1">
-          {TABS.map((t) => (
+        <nav className="flex gap-1">
+          {([
+            ["mapa", "🗺️ Mapa"],
+            ["distancias", "📏 Distâncias entre Bairros"],
+          ] as [Tab, string][]).map(([id, label]) => (
             <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
+              key={id}
+              onClick={() => setTab(id)}
               className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                tab === t.id ? "bg-teal-700 text-white" : "text-slate-300 hover:bg-slate-800 hover:text-white"
+                tab === id ? "bg-teal-700 text-white" : "text-slate-300 hover:bg-slate-800 hover:text-white"
               }`}
             >
-              {t.label}
+              {label}
             </button>
           ))}
         </nav>
@@ -317,192 +247,96 @@ export default function Home() {
       <main className="min-h-0 flex-1">
         {!loaded ? (
           <div className="flex h-full items-center justify-center text-sm text-slate-400">Carregando dados…</div>
-        ) : (
-          <>
-            {tab === "mapa" && (
-              <div className="relative h-full min-h-[560px]">
-                <MapView
-                  areas={areas}
-                  regions={regions}
-                  units={units}
-                  mode={mapMode}
-                  drawTarget={drawTarget}
-                  onPolygonDrawn={handlePolygonDrawn}
-                  drawArmedToken={drawArmedToken}
-                  placingUnit={placingUnit}
-                  onMapClickForUnit={handleMapClickForUnit}
-                  onUnitDragEnd={handleUnitDragEnd}
-                  onUnitClick={handleUnitClick}
-                  onRegionClick={handleRegionMapClick}
-                  distanceSelection={distanceSelection}
-                  routeSequence={mapMode === "routes" ? routeSequence : null}
-                  highlightRegionIds={highlightRegionIds}
-                  highlightUnitId={highlightUnitId}
-                  connectorLine={connectorLine}
-                  flyTo={flyTo}
-                  resetViewToken={resetViewToken}
-                  searchMarker={searchMarker}
-                />
+        ) : tab === "mapa" ? (
+          <div className="flex h-full min-h-[560px]">
+            <div className="relative flex-1">
+              <MapView
+                areas={areas}
+                regions={regions}
+                units={units}
+                drawArmedToken={drawArmedToken}
+                onPolygonDrawn={handlePolygonDrawn}
+                onRegionClick={handleRegionMapClick}
+                onUnitClick={handleUnitMapClick}
+                highlightRegionIds={highlightRegionIds}
+                highlightUnitId={highlightUnitId}
+                connectorLine={connectorLine}
+                flyTo={flyTo}
+                resetViewToken={resetViewToken}
+                searchMarker={searchMarker}
+              />
 
-                <div className="pointer-events-none absolute inset-0">
-                  <div className="pointer-events-auto absolute left-3 top-3 w-72 space-y-3 rounded-lg border border-slate-200 bg-white/95 p-3 shadow-lg backdrop-blur">
-                    <div>
-                      <span className="mb-1 block text-xs font-medium text-slate-500">🔎 Pesquisar bairro, rua ou endereço</span>
-                      <div className="flex gap-1.5">
-                        <Input
-                          value={searchQuery}
-                          onChange={(e) => setSearchQuery(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") runSearch();
-                          }}
-                          placeholder="Ex.: Guaratiba, Av. Dom João VI…"
-                        />
-                        <Button variant="secondary" onClick={runSearch} disabled={searching}>
-                          {searching ? "…" : "Ir"}
-                        </Button>
-                      </div>
-                      {searchError && <p className="mt-1 text-xs text-red-600">{searchError}</p>}
-                    </div>
-
-                    <Button variant="secondary" className="w-full" onClick={resetToFullArea}>
-                      ⌂ Voltar para a área completa
-                    </Button>
-
-                    <div>
-                      <span className="mb-1 block text-xs font-medium text-slate-500">Modo de visualização</span>
-                      <Select value={mapMode} onChange={(e) => setMapMode(e.target.value as MapMode)}>
-                        <option value="normal">Normal</option>
-                        <option value="regions">Regiões / bairros</option>
-                        <option value="distances">Distâncias</option>
-                        <option value="routes">Rotas</option>
-                        <option value="concentration">Concentração</option>
-                      </Select>
-                    </div>
-
-                    <div className="border-t border-slate-100 pt-3">
-                      <span className="mb-1 block text-xs font-medium text-slate-500">Área de atuação</span>
-                      <Button variant="secondary" className="w-full" onClick={requestDrawArea}>
-                        {areas.length > 0 ? "Redesenhar área" : "Desenhar área"}
+              <div className="pointer-events-none absolute inset-0">
+                <div className="pointer-events-auto absolute left-3 top-3 w-72 space-y-3 rounded-lg border border-slate-200 bg-white/95 p-3 shadow-lg backdrop-blur">
+                  <div>
+                    <span className="mb-1 block text-xs font-medium text-slate-500">🔎 Pesquisar bairro, rua ou endereço</span>
+                    <div className="flex gap-1.5">
+                      <Input
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") runSearch();
+                        }}
+                        placeholder="Ex.: Guaratiba, Av. Dom João VI…"
+                      />
+                      <Button variant="secondary" onClick={runSearch} disabled={searching}>
+                        {searching ? "…" : "Ir"}
                       </Button>
                     </div>
-
-                    <div className="border-t border-slate-100 pt-3">
-                      <span className="mb-1 block text-xs font-medium text-slate-500">Unidades</span>
-                      <Button
-                        variant={placingUnit ? "primary" : "secondary"}
-                        className="w-full"
-                        onClick={() => setPlacingUnit((v) => !v)}
-                      >
-                        {placingUnit ? "Clique no mapa para posicionar…" : "Adicionar unidade no mapa"}
-                      </Button>
-                      <p className="mt-1 text-xs text-slate-400">Ou arraste um marcador existente para reposicioná-lo.</p>
-                    </div>
-
-                    {drawTargetLabel && (
-                      <div className="rounded-md bg-amber-50 px-2.5 py-2 text-xs text-amber-700">
-                        Desenhando: <strong>{drawTargetLabel}</strong>. Clique no mapa para marcar os vértices e clique duplo para finalizar.
-                      </div>
-                    )}
-
-                    {mapMode === "distances" && (
-                      <div className="border-t border-slate-100 pt-3">
-                        <span className="mb-1 block text-xs font-medium text-slate-500">Comparar distância</span>
-                        <p className="text-xs text-slate-500">Clique em duas unidades no mapa.</p>
-                        {distanceSelection.length > 0 && (
-                          <ul className="mt-1 text-xs text-slate-600">
-                            {distanceSelection.map((u) => (
-                              <li key={u.id}>• {u.name}</li>
-                            ))}
-                          </ul>
-                        )}
-                        {distanceResult && (
-                          <div className="mt-2 rounded-md bg-slate-50 px-2.5 py-2 text-xs text-slate-700">
-                            <div>Linha reta: <strong>{distanceResult.straight_line_km} km</strong></div>
-                            <div>Por estrada: <strong>{distanceResult.road_km} km · {Math.round(distanceResult.road_minutes)} min</strong></div>
-                            {distanceResult.road_estimated && (
-                              <div className="mt-1 text-amber-600">valor estimado (serviço de rota indisponível)</div>
-                            )}
-                          </div>
-                        )}
-                        {distanceSelection.length > 0 && (
-                          <Button variant="ghost" className="mt-1 w-full" onClick={() => setDistanceSelection([])}>
-                            Limpar seleção
-                          </Button>
-                        )}
-                      </div>
-                    )}
-
-                    {connectorLine && (
-                      <div className="border-t border-slate-100 pt-3">
-                        <span className="mb-1 block text-xs font-medium text-slate-500">Bairros conectados</span>
-                        <p className="text-xs text-slate-600">
-                          {connectorLine.a.name} ↔ {connectorLine.b.name}
-                          {connectorLine.label && <> — {connectorLine.label}</>}
-                        </p>
-                        <Button variant="ghost" className="mt-1 w-full" onClick={() => setConnectorLine(null)}>
-                          Limpar
-                        </Button>
-                      </div>
-                    )}
-
-                    {mapMode === "routes" && routeSequence && (
-                      <div className="border-t border-slate-100 pt-3">
-                        <span className="mb-1 block text-xs font-medium text-slate-500">Rota exibida</span>
-                        <p className="text-xs text-slate-500">{routeSequence.length} ponto(s) · veja a sequência na aba Rotas.</p>
-                        <Button variant="ghost" className="mt-1 w-full" onClick={() => setRouteSequence(null)}>
-                          Ocultar rota
-                        </Button>
-                      </div>
-                    )}
+                    {searchError && <p className="mt-1 text-xs text-red-600">{searchError}</p>}
                   </div>
+
+                  <Button variant="secondary" className="w-full" onClick={resetToFullArea}>
+                    ⌂ Voltar para a área completa
+                  </Button>
+
+                  <div className="border-t border-slate-100 pt-3">
+                    <Button variant="secondary" className="w-full" onClick={requestDrawArea}>
+                      Redesenhar área traçada
+                    </Button>
+                    <p className="mt-1 text-xs text-slate-400">O traçado atual já vem pré-carregado — só redesenhe se precisar ajustar.</p>
+                  </div>
+
+                  {connectorLine && (
+                    <div className="border-t border-slate-100 pt-3">
+                      <span className="mb-1 block text-xs font-medium text-slate-500">Bairros conectados</span>
+                      <p className="text-xs text-slate-600">
+                        {connectorLine.a.name} ↔ {connectorLine.b.name}
+                        {connectorLine.label && <> — {connectorLine.label}</>}
+                      </p>
+                      <Button variant="ghost" className="mt-1 w-full" onClick={() => setConnectorLine(null)}>
+                        Limpar
+                      </Button>
+                    </div>
+                  )}
                 </div>
               </div>
-            )}
+            </div>
 
-            {tab === "bairros" && (
-              <BairrosPanel
-                regions={regions}
-                units={units}
-                onSelectRegion={focusRegion}
-                onSelectUnit={focusUnit}
-                selectedRegionId={highlightRegionIds.length === 1 ? highlightRegionIds[0] : null}
-                selectedUnitId={highlightUnitId}
-              />
-            )}
-
-            {tab === "regioes" && (
-              <RegionsPanel regions={regions} teams={teams} units={units} onChange={fetchAll} onRequestDraw={requestDrawRegion} />
-            )}
-
-            {tab === "unidades" && (
-              <UnitsPanel
-                units={units}
-                regions={regions}
-                teams={teams}
-                onChange={fetchAll}
-                pendingCoords={pendingCoords}
-                onConsumePendingCoords={() => setPendingCoords(null)}
-                focusUnitId={focusUnitId}
-              />
-            )}
-
-            {tab === "equipes" && <TeamsPanel teams={teams} onChange={fetchAll} />}
-
-            {tab === "distancias" && <DistanceMatrixPanel regions={regions} onCellClick={handleDistanceCellClick} />}
-
-            {tab === "rotas" && (
-              <RoutePlannerPanel
-                units={units}
-                onViewOnMap={(seq) => {
-                  setRouteSequence(seq);
-                  setMapMode("routes");
-                  setTab("mapa");
-                }}
-              />
-            )}
-
-            {tab === "dashboard" && <DashboardPanel />}
-          </>
+            <aside className="flex w-80 shrink-0 flex-col overflow-y-auto border-l border-slate-200 bg-slate-50 p-3">
+              <div className="mb-3">
+                <h2 className="text-sm font-semibold text-slate-800">Bairros e Localizações</h2>
+                <p className="mt-0.5 text-xs text-slate-500">Clique para localizar e destacar no mapa.</p>
+              </div>
+              <Button onClick={runDiscovery} disabled={discovering} className="mb-3">
+                {discovering ? "Identificando…" : bairroCount > 0 ? "Atualizar bairros e ruas" : "Identificar bairros e ruas"}
+              </Button>
+              {discoverError && <p className="mb-3 text-xs text-red-600">{discoverError}</p>}
+              {discoverSummary && <p className="mb-3 text-xs text-teal-700">{discoverSummary}</p>}
+              <div className="min-h-0 flex-1">
+                <BairrosPanel
+                  regions={regions}
+                  units={units}
+                  onSelectRegion={focusRegion}
+                  onSelectUnit={focusUnit}
+                  selectedRegionId={selectedRegionId}
+                  selectedUnitId={highlightUnitId}
+                />
+              </div>
+            </aside>
+          </div>
+        ) : (
+          <DistanciasPanel regions={regions} onSelectPair={handleSelectPair} />
         )}
       </main>
     </div>
