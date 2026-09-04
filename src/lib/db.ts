@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS regions (
   centroid_lat REAL,
   centroid_lng REAL,
   parent_id TEXT REFERENCES regions(id) ON DELETE SET NULL,  -- NULL = Bairro (nível 1); preenchido = Sub-bairro (nível 2)
+  place_type TEXT,              -- classificação original do OSM (suburb, neighbourhood, quarter, hamlet, locality) — preservada, não inventada
   source TEXT NOT NULL DEFAULT 'manual',  -- 'overpass' (identificado automaticamente) | 'manual'
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -95,32 +96,47 @@ function ensureColumn(table: string, column: string, ddl: string) {
 }
 ensureColumn("regions", "parent_id", `parent_id TEXT REFERENCES regions(id) ON DELETE SET NULL`);
 ensureColumn("regions", "source", `source TEXT NOT NULL DEFAULT 'manual'`);
+ensureColumn("regions", "place_type", `place_type TEXT`);
 ensureColumn("units", "source", `source TEXT NOT NULL DEFAULT 'manual'`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_regions_parent ON regions(parent_id)`);
 
 // --- Seed the pre-traced operating area on first run, reconstructed from
-// the reference map the client provided (Zona Oeste do Rio: Paciência,
-// Cosmos, Inhoaíba, Senador Vasconcelos, Santíssimo, Guaratiba, Ilha de
-// Guaratiba, Pedra de Guaratiba). This is an approximate redraw from a flat
+// the reference map the client provided (Zona Oeste do Rio: Campo Grande,
+// Paciência, Cosmos, Inhoaíba, Senador Vasconcelos, Santíssimo, Guaratiba
+// and nearby localities). This is an approximate redraw from a flat
 // screenshot, not a georeferenced source — adjust with "Redesenhar área" on
 // the map if it doesn't quite match. ---
+const SEED_AREA_NAME = "Área de atuação (Zona Oeste — Campo Grande/Guaratiba/Paciência)";
 const SEED_AREA: [number, number][] = [
   [-43.665, -22.865],
-  [-43.62, -22.858],
-  [-43.595, -22.865],
-  [-43.585, -22.9],
-  [-43.595, -22.95],
+  [-43.6, -22.855],
+  [-43.555, -22.86],
+  [-43.545, -22.9],
+  [-43.555, -22.95],
   [-43.575, -22.99],
   [-43.605, -23.015],
   [-43.665, -23.01],
   [-43.675, -22.95],
 ];
 
-const areaCount = (db.prepare(`SELECT COUNT(*) AS c FROM areas`).get() as { c: number }).c;
-if (areaCount === 0) {
-  db.prepare(`INSERT INTO areas (id, name, geojson) VALUES (?, ?, ?)`).run(
-    randomUUID(),
-    "Área de atuação (Zona Oeste — Guaratiba/Paciência)",
-    JSON.stringify(SEED_AREA)
+const existingSeedArea = db
+  .prepare(`SELECT id FROM areas WHERE name LIKE 'Área de atuação (Zona Oeste%'`)
+  .get() as { id: string } | undefined;
+
+if (existingSeedArea) {
+  // Keep our own reconstructed default in sync as it gets refined across
+  // versions (e.g. widened to make sure Campo Grande itself falls inside
+  // the traced boundary). A manually redrawn area keeps the same row/name
+  // today, so this intentionally stays a best-effort default, not a lock —
+  // use "Redesenhar área" any time to override it for good.
+  db.prepare(`UPDATE areas SET name = ?, geojson = ? WHERE id = ?`).run(
+    SEED_AREA_NAME,
+    JSON.stringify(SEED_AREA),
+    existingSeedArea.id
   );
+} else {
+  const areaCount = (db.prepare(`SELECT COUNT(*) AS c FROM areas`).get() as { c: number }).c;
+  if (areaCount === 0) {
+    db.prepare(`INSERT INTO areas (id, name, geojson) VALUES (?, ?, ?)`).run(randomUUID(), SEED_AREA_NAME, JSON.stringify(SEED_AREA));
+  }
 }

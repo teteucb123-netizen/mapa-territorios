@@ -9,6 +9,7 @@ export type Region = {
   centroid_lat: number | null;
   centroid_lng: number | null;
   parent_id: string | null; // null = Bairro (nível 1); preenchido = Sub-bairro (nível 2, filho de um Bairro)
+  place_type: string | null; // classificação original do OSM (suburb, neighbourhood, quarter, hamlet, locality)
   source: "overpass" | "manual";
   created_at: string;
   updated_at: string;

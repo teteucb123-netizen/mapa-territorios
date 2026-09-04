@@ -9,7 +9,7 @@ import { Button, Input } from "@/components/ui";
 import { api } from "@/lib/api-client";
 import { Area, Region, Unit } from "@/lib/types";
 
-type Tab = "mapa" | "distancias";
+type Tab = "mapa" | "bairros" | "distancias";
 
 export default function Home() {
   const [tab, setTab] = useState<Tab>("mapa");
@@ -229,6 +229,7 @@ export default function Home() {
         <nav className="flex gap-1">
           {([
             ["mapa", "🗺️ Mapa"],
+            ["bairros", "📍 Bairros e Sub-bairros"],
             ["distancias", "📏 Distâncias entre Bairros"],
           ] as [Tab, string][]).map(([id, label]) => (
             <button
@@ -248,92 +249,86 @@ export default function Home() {
         {!loaded ? (
           <div className="flex h-full items-center justify-center text-sm text-slate-400">Carregando dados…</div>
         ) : tab === "mapa" ? (
-          <div className="flex h-full min-h-[560px]">
-            <div className="relative flex-1">
-              <MapView
-                areas={areas}
-                regions={regions}
-                units={units}
-                drawArmedToken={drawArmedToken}
-                onPolygonDrawn={handlePolygonDrawn}
-                onRegionClick={handleRegionMapClick}
-                onUnitClick={handleUnitMapClick}
-                highlightRegionIds={highlightRegionIds}
-                highlightUnitId={highlightUnitId}
-                connectorLine={connectorLine}
-                flyTo={flyTo}
-                resetViewToken={resetViewToken}
-                searchMarker={searchMarker}
-              />
+          <div className="relative h-full min-h-[560px]">
+            <MapView
+              areas={areas}
+              regions={regions}
+              units={units}
+              drawArmedToken={drawArmedToken}
+              onPolygonDrawn={handlePolygonDrawn}
+              onRegionClick={handleRegionMapClick}
+              onUnitClick={handleUnitMapClick}
+              highlightRegionIds={highlightRegionIds}
+              highlightUnitId={highlightUnitId}
+              connectorLine={connectorLine}
+              flyTo={flyTo}
+              resetViewToken={resetViewToken}
+              searchMarker={searchMarker}
+            />
 
-              <div className="pointer-events-none absolute inset-0">
-                <div className="pointer-events-auto absolute left-3 top-3 w-72 space-y-3 rounded-lg border border-slate-200 bg-white/95 p-3 shadow-lg backdrop-blur">
-                  <div>
-                    <span className="mb-1 block text-xs font-medium text-slate-500">🔎 Pesquisar bairro, rua ou endereço</span>
-                    <div className="flex gap-1.5">
-                      <Input
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") runSearch();
-                        }}
-                        placeholder="Ex.: Guaratiba, Av. Dom João VI…"
-                      />
-                      <Button variant="secondary" onClick={runSearch} disabled={searching}>
-                        {searching ? "…" : "Ir"}
-                      </Button>
-                    </div>
-                    {searchError && <p className="mt-1 text-xs text-red-600">{searchError}</p>}
-                  </div>
-
-                  <Button variant="secondary" className="w-full" onClick={resetToFullArea}>
-                    ⌂ Voltar para a área completa
-                  </Button>
-
-                  <div className="border-t border-slate-100 pt-3">
-                    <Button variant="secondary" className="w-full" onClick={requestDrawArea}>
-                      Redesenhar área traçada
+            <div className="pointer-events-none absolute inset-0">
+              <div className="pointer-events-auto absolute left-3 top-3 w-72 space-y-3 rounded-lg border border-slate-200 bg-white/95 p-3 shadow-lg backdrop-blur">
+                <div>
+                  <span className="mb-1 block text-xs font-medium text-slate-500">🔎 Pesquisar bairro, rua ou endereço</span>
+                  <div className="flex gap-1.5">
+                    <Input
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") runSearch();
+                      }}
+                      placeholder="Ex.: Campo Grande, Av. Dom João VI…"
+                    />
+                    <Button variant="secondary" onClick={runSearch} disabled={searching}>
+                      {searching ? "…" : "Ir"}
                     </Button>
-                    <p className="mt-1 text-xs text-slate-400">O traçado atual já vem pré-carregado — só redesenhe se precisar ajustar.</p>
                   </div>
-
-                  {connectorLine && (
-                    <div className="border-t border-slate-100 pt-3">
-                      <span className="mb-1 block text-xs font-medium text-slate-500">Bairros conectados</span>
-                      <p className="text-xs text-slate-600">
-                        {connectorLine.a.name} ↔ {connectorLine.b.name}
-                        {connectorLine.label && <> — {connectorLine.label}</>}
-                      </p>
-                      <Button variant="ghost" className="mt-1 w-full" onClick={() => setConnectorLine(null)}>
-                        Limpar
-                      </Button>
-                    </div>
-                  )}
+                  {searchError && <p className="mt-1 text-xs text-red-600">{searchError}</p>}
                 </div>
+
+                <Button variant="secondary" className="w-full" onClick={resetToFullArea}>
+                  ⌂ Voltar para a área completa
+                </Button>
+
+                <div className="border-t border-slate-100 pt-3">
+                  <Button variant="secondary" className="w-full" onClick={requestDrawArea}>
+                    Redesenhar área traçada
+                  </Button>
+                  <p className="mt-1 text-xs text-slate-400">O traçado atual já vem pré-carregado — só redesenhe se precisar ajustar.</p>
+                </div>
+
+                {connectorLine && (
+                  <div className="border-t border-slate-100 pt-3">
+                    <span className="mb-1 block text-xs font-medium text-slate-500">Bairros conectados</span>
+                    <p className="text-xs text-slate-600">
+                      {connectorLine.a.name} ↔ {connectorLine.b.name}
+                      {connectorLine.label && <> — {connectorLine.label}</>}
+                    </p>
+                    <Button variant="ghost" className="mt-1 w-full" onClick={() => setConnectorLine(null)}>
+                      Limpar
+                    </Button>
+                  </div>
+                )}
               </div>
             </div>
-
-            <aside className="flex w-80 shrink-0 flex-col overflow-y-auto border-l border-slate-200 bg-slate-50 p-3">
-              <div className="mb-3">
-                <h2 className="text-sm font-semibold text-slate-800">Bairros e Localizações</h2>
-                <p className="mt-0.5 text-xs text-slate-500">Clique para localizar e destacar no mapa.</p>
-              </div>
-              <Button onClick={runDiscovery} disabled={discovering} className="mb-3">
+          </div>
+        ) : tab === "bairros" ? (
+          <div>
+            <div className="flex flex-wrap items-center gap-3 border-b border-slate-200 bg-white px-6 py-3">
+              <Button onClick={runDiscovery} disabled={discovering}>
                 {discovering ? "Identificando…" : bairroCount > 0 ? "Atualizar bairros e ruas" : "Identificar bairros e ruas"}
               </Button>
-              {discoverError && <p className="mb-3 text-xs text-red-600">{discoverError}</p>}
-              {discoverSummary && <p className="mb-3 text-xs text-teal-700">{discoverSummary}</p>}
-              <div className="min-h-0 flex-1">
-                <BairrosPanel
-                  regions={regions}
-                  units={units}
-                  onSelectRegion={focusRegion}
-                  onSelectUnit={focusUnit}
-                  selectedRegionId={selectedRegionId}
-                  selectedUnitId={highlightUnitId}
-                />
-              </div>
-            </aside>
+              {discoverError && <span className="text-xs text-red-600">{discoverError}</span>}
+              {discoverSummary && <span className="text-xs text-teal-700">{discoverSummary}</span>}
+            </div>
+            <BairrosPanel
+              regions={regions}
+              units={units}
+              onSelectRegion={focusRegion}
+              onSelectUnit={focusUnit}
+              selectedRegionId={selectedRegionId}
+              selectedUnitId={highlightUnitId}
+            />
           </div>
         ) : (
           <DistanciasPanel regions={regions} onSelectPair={handleSelectPair} />

@@ -2,7 +2,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Region, Unit } from "@/lib/types";
-import { Card } from "./ui";
+import { Badge, Card } from "./ui";
+
+const FOCO_PRINCIPAL = "campo grande";
 
 export default function BairrosPanel({
   regions,
@@ -19,7 +21,18 @@ export default function BairrosPanel({
   selectedRegionId: string | null;
   selectedUnitId: string | null;
 }) {
-  const bairros = useMemo(() => regions.filter((r) => !r.parent_id).sort((a, b) => a.name.localeCompare(b.name)), [regions]);
+  // Campo Grande é o foco principal do sistema: sempre aparece primeiro,
+  // independente de ordem alfabética.
+  const bairros = useMemo(() => {
+    return [...regions.filter((r) => !r.parent_id)].sort((a, b) => {
+      const aFoco = a.name.trim().toLowerCase() === FOCO_PRINCIPAL;
+      const bFoco = b.name.trim().toLowerCase() === FOCO_PRINCIPAL;
+      if (aFoco && !bFoco) return -1;
+      if (bFoco && !aFoco) return 1;
+      return a.name.localeCompare(b.name);
+    });
+  }, [regions]);
+
   const subBairrosByParent = useMemo(() => {
     const map = new Map<string, Region[]>();
     regions
@@ -46,6 +59,18 @@ export default function BairrosPanel({
   const unitsWithoutRegion = useMemo(() => units.filter((u) => !u.region_id).sort((a, b) => a.name.localeCompare(b.name)), [units]);
 
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [autoOpenedFoco, setAutoOpenedFoco] = useState(false);
+
+  // Campo Grande abre sozinho ao carregar, já mostrando seus sub-bairros —
+  // é o foco principal do sistema, não deveria exigir um clique extra.
+  useEffect(() => {
+    if (autoOpenedFoco) return;
+    const foco = regions.find((r) => !r.parent_id && r.name.trim().toLowerCase() === FOCO_PRINCIPAL);
+    if (foco) {
+      setExpanded((prev) => new Set(prev).add(foco.id));
+      setAutoOpenedFoco(true);
+    }
+  }, [regions, autoOpenedFoco]);
 
   // Auto-expand the ancestors of whatever got selected (from a map click),
   // so the tree opens itself to reveal the highlighted item.
@@ -97,31 +122,45 @@ export default function BairrosPanel({
   function RegionRow({ region, isSub }: { region: Region; isSub: boolean }) {
     const isSelected = region.id === selectedRegionId;
     const isOpen = expanded.has(region.id);
+    const isFoco = !isSub && region.name.trim().toLowerCase() === FOCO_PRINCIPAL;
     const children = subBairrosByParent.get(region.id) || [];
     const regionUnits = unitsByRegion.get(region.id) || [];
     const hasChildren = children.length > 0 || regionUnits.length > 0;
+
+    // Clicar no nome faz as duas coisas ao mesmo tempo: expande/recolhe a
+    // lista de filhos E localiza/destaca no mapa.
+    function handleClick() {
+      if (hasChildren) toggle(region.id);
+      onSelectRegion(region);
+    }
+
+    // Preserva a classificação original encontrada no OpenStreetMap em vez
+    // de assumir "sub-bairro" para tudo — uma localidade sem status oficial
+    // de bairro aparece como "localidade", não como se fosse a mesma coisa.
+    const qualifier =
+      isSub && region.place_type && region.place_type !== "neighbourhood" && region.place_type !== "quarter"
+        ? region.place_type === "hamlet" || region.place_type === "locality"
+          ? "localidade"
+          : region.place_type
+        : null;
 
     return (
       <div>
         <div
           className={`flex items-center gap-1.5 rounded px-2 py-1.5 hover:bg-slate-50 ${
             isSelected ? "bg-teal-50 ring-1 ring-teal-400" : ""
-          }`}
+          } ${isFoco ? "bg-amber-50/60" : ""}`}
         >
           {hasChildren ? (
-            <button
-              onClick={() => toggle(region.id)}
-              className="flex h-4 w-4 shrink-0 items-center justify-center text-slate-400"
-              aria-label={isOpen ? "Recolher" : "Expandir"}
-            >
-              {isOpen ? "▾" : "▸"}
-            </button>
+            <span className="flex h-4 w-4 shrink-0 items-center justify-center text-slate-400">{isOpen ? "▾" : "▸"}</span>
           ) : (
             <span className="w-4 shrink-0" />
           )}
-          <button onClick={() => onSelectRegion(region)} className="flex flex-1 items-center gap-2 text-left">
+          <button onClick={handleClick} className="flex flex-1 items-center gap-2 text-left">
             <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: region.color }} />
             <span className={`truncate text-sm ${isSub ? "text-slate-600" : "font-medium text-slate-800"}`}>{region.name}</span>
+            {qualifier && <span className="shrink-0 text-xs text-slate-400">({qualifier})</span>}
+            {isFoco && <Badge color="#d97706">⭐ foco principal</Badge>}
           </button>
         </div>
         {isOpen && (
@@ -132,6 +171,9 @@ export default function BairrosPanel({
             {regionUnits.map((u) => (
               <UnitRow key={u.id} unit={u} />
             ))}
+            {children.length === 0 && regionUnits.length === 0 && (
+              <p className="px-2 py-1 text-xs text-slate-400">Nenhum sub-bairro ou rua identificado aqui ainda.</p>
+            )}
           </div>
         )}
       </div>
@@ -139,28 +181,35 @@ export default function BairrosPanel({
   }
 
   return (
-    <Card className="p-2">
-      {bairros.length === 0 && (
-        <p className="p-3 text-sm text-slate-400">
-          Nenhum bairro identificado ainda. Use o botão &quot;Identificar bairros e ruas&quot; para consultar dados
-          geográficos reais dentro da área traçada.
-        </p>
-      )}
-      <div className="space-y-0.5">
-        {bairros.map((b) => (
-          <RegionRow key={b.id} region={b} isSub={false} />
-        ))}
-      </div>
-      {unitsWithoutRegion.length > 0 && (
-        <div className="mt-2 border-t border-slate-100 pt-2">
-          <div className="px-2 py-1 text-xs font-medium uppercase tracking-wide text-slate-400">Sem bairro</div>
-          <div className="space-y-0.5">
-            {unitsWithoutRegion.map((u) => (
-              <UnitRow key={u.id} unit={u} />
-            ))}
-          </div>
+    <div className="p-6">
+      <h2 className="mb-1 text-lg font-semibold text-slate-800">Bairros e Sub-bairros</h2>
+      <p className="mb-4 text-sm text-slate-500">
+        <strong>Campo Grande</strong> é o foco principal. Clique em um bairro para abrir seus sub-bairros/localidades, em um
+        sub-bairro para ver suas ruas, ou em uma rua para localizar no mapa.
+      </p>
+      <Card className="p-2">
+        {bairros.length === 0 && (
+          <p className="p-3 text-sm text-slate-400">
+            Nenhum bairro identificado ainda. Use o botão &quot;Identificar bairros e ruas&quot; para consultar dados
+            geográficos reais dentro da área traçada.
+          </p>
+        )}
+        <div className="space-y-0.5">
+          {bairros.map((b) => (
+            <RegionRow key={b.id} region={b} isSub={false} />
+          ))}
         </div>
-      )}
-    </Card>
+        {unitsWithoutRegion.length > 0 && (
+          <div className="mt-2 border-t border-slate-100 pt-2">
+            <div className="px-2 py-1 text-xs font-medium uppercase tracking-wide text-slate-400">Sem bairro</div>
+            <div className="space-y-0.5">
+              {unitsWithoutRegion.map((u) => (
+                <UnitRow key={u.id} unit={u} />
+              ))}
+            </div>
+          </div>
+        )}
+      </Card>
+    </div>
   );
 }

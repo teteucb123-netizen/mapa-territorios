@@ -56,8 +56,8 @@ export async function POST() {
   db.exec(`DELETE FROM units; DELETE FROM regions;`);
 
   const insertRegion = db.prepare(
-    `INSERT INTO regions (id, name, color, centroid_lat, centroid_lng, parent_id, source)
-     VALUES (@id, @name, @color, @lat, @lng, @parent_id, 'overpass')`
+    `INSERT INTO regions (id, name, color, centroid_lat, centroid_lng, parent_id, place_type, source)
+     VALUES (@id, @name, @color, @lat, @lng, @parent_id, @place_type, 'overpass')`
   );
   const insertUnit = db.prepare(
     `INSERT INTO units (id, name, lat, lng, region_id, type, source)
@@ -67,7 +67,15 @@ export async function POST() {
   type Placed = { id: string; name: string; lat: number; lng: number };
   const bairros: Placed[] = bairroCandidates.map((p, i) => {
     const id = randomUUID();
-    insertRegion.run({ id, name: p.name, color: COLOR_PALETTE[i % COLOR_PALETTE.length], lat: p.lat, lng: p.lng, parent_id: null });
+    insertRegion.run({
+      id,
+      name: p.name,
+      color: COLOR_PALETTE[i % COLOR_PALETTE.length],
+      lat: p.lat,
+      lng: p.lng,
+      parent_id: null,
+      place_type: p.placeType,
+    });
     return { id, name: p.name, lat: p.lat, lng: p.lng };
   });
 
@@ -75,7 +83,7 @@ export async function POST() {
     const parent = bairros.length > 0 ? nearest(p, bairros) : null;
     const id = randomUUID();
     const color = parent ? COLOR_PALETTE[bairros.indexOf(parent) % COLOR_PALETTE.length] : "#64748b";
-    insertRegion.run({ id, name: p.name, color, lat: p.lat, lng: p.lng, parent_id: parent?.id ?? null });
+    insertRegion.run({ id, name: p.name, color, lat: p.lat, lng: p.lng, parent_id: parent?.id ?? null, place_type: p.placeType });
     return { id, name: p.name, lat: p.lat, lng: p.lng };
   });
 
